@@ -1,25 +1,13 @@
-# MIT-6.824
+# Raft Distribute Systems Lab
 
-Labs of MIT 6.824: Distributed Systems.
+=> MIT 6.824: Raft Distributed Consensus Lab
 
-### Lab 1 MapReduce
-- [X] MapReduce input and output
-- [X] Single-worker word count
-- [X] Distributing MapReduce tasks
-- [X] Handling worker failures
-- [X] Inverted index generation
+-> 📅 Week 1: Leader Election (Lab 2A)
 
-### Lab 2 Raft
-- [X] 2A
-- [X] 2B
-- [X] 2C
+✅ Go 1.19 environment set up
+✅ Raft leader election logic implemented
+✅ Tests 2A passed (Initial election + re-election)
+-> 📓 Notes
 
-### Lab 3 Fault-tolerant Key/Value Service
-- [X] Key/value service without log compaction
-- [X] Key/value service with log compaction
-
-### Lab 4 Sharded Key/Value Service
-- [X] The Shard Master
-- [X] Sharded Key/Value Server
-  - [X] Garbage collection of state
-  - [X] Client requests during configuration changes
+Used randomized timeouts between 150–300ms
+Debugging logs added for candidate → leader transitions
