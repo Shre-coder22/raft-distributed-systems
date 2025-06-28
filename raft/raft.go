@@ -19,6 +19,7 @@ package raft
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"mitraft/labgob"
 	"mitraft/labrpc"
@@ -28,6 +29,11 @@ import (
 
 // import "bytes"
 // import "mitraft/labgob"
+
+const (
+	MinElectionTimeout = 300
+	MaxElectionTimeout = 600
+)
 
 type LogEntry struct {
 	Index   int
@@ -218,6 +224,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	fmt.Printf("[%d] becomes candidate (term %d)", rf.me, rf.currentTerm)
 	defer rf.persist()
 
 	if args.Term < rf.currentTerm {
@@ -635,32 +642,57 @@ func (rf *Raft) Kill() {
 func (rf *Raft) Run() {
 	for {
 		switch rf.state {
+
 		case STATE_FOLLOWER:
+			timeout := time.Duration(rand.Intn(MaxElectionTimeout-MinElectionTimeout) + MinElectionTimeout)
 			select {
 			case <-rf.chanGrantVote:
+				// fmt.Printf("[VOTE] Node %d received vote grant\n", rf.me)
 			case <-rf.chanHeartbeat:
-			case <-time.After(time.Millisecond * time.Duration(rand.Intn(300)+200)):
+				// fmt.Printf("[HB] Node %d received heartbeat\n", rf.me)
+			case <-time.After(time.Millisecond * timeout):
+				rf.mu.Lock()
 				rf.state = STATE_CANDIDATE
 				rf.persist()
+				fmt.Printf("[⏱ TIMEOUT] Follower %d → Candidate (next term %d)\n", rf.me, rf.currentTerm+1)
+				rf.mu.Unlock()
 			}
-		case STATE_LEADER:
-			go rf.broadcastHeartbeat()
-			time.Sleep(time.Millisecond * 60)
+
 		case STATE_CANDIDATE:
 			rf.mu.Lock()
 			rf.currentTerm++
 			rf.votedFor = rf.me
 			rf.voteCount = 1
 			rf.persist()
+			fmt.Printf("[🗳️ ELECT] Candidate %d starts election (term %d)\n", rf.me, rf.currentTerm)
 			rf.mu.Unlock()
+
 			go rf.broadcastRequestVote()
 
 			select {
 			case <-rf.chanHeartbeat:
+				rf.mu.Lock()
 				rf.state = STATE_FOLLOWER
+				rf.persist()
+				fmt.Printf("[⬇️ STEP-DOWN] Candidate %d → Follower (term %d) on heartbeat\n", rf.me, rf.currentTerm)
+				rf.mu.Unlock()
+
 			case <-rf.chanWinElect:
+				rf.mu.Lock()
+				rf.state = STATE_LEADER
+				rf.persist()
+				fmt.Printf("[🎯 LEADER] Node %d won election → Leader (term %d)\n", rf.me, rf.currentTerm)
+				rf.mu.Unlock()
+
 			case <-time.After(time.Millisecond * time.Duration(rand.Intn(300)+200)):
+				// Election timeout → retry in next loop
 			}
+
+		case STATE_LEADER:
+			// rate-limited log if needed
+			// fmt.Printf("[❤️ HB] Leader %d sending heartbeat (term %d)\n", rf.me, rf.currentTerm)
+			go rf.broadcastHeartbeat()
+			time.Sleep(time.Millisecond * 60)
 		}
 	}
 }
