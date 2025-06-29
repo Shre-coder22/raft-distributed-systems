@@ -1,52 +1,82 @@
-# Raft Distributed Systems Lab
+# Raft Distributed Systems Lab:
 
-# 🚀 Raft: Distributed Consensus Algorithm (MIT 6.824 Labs)
+# 🚀 Raft: Distributed Consensus Algorithm (MIT 6.824 Labs):
 
-This project implements the Raft consensus algorithm as part of the MIT 6.824 Distributed Systems course.  
-Raft is a fault-tolerant protocol used to manage a replicated log across multiple nodes.
-
----
-
-## ✅ Status:
-
-- [x] Leader Election (Lab 2A)
-- [ ] Log Replication (2B)
-- [ ] Persistence (2C)
+This project implements the **Raft consensus algorithm** as part of the MIT 6.824 Distributed Systems course.  
+Raft is a fault-tolerant protocol used to manage a replicated log across multiple nodes with clear state transitions and strong leadership guarantees.
 
 ---
 
-## 📄 Features Implemented:
+## ✅ Lab Progress:
+
+| Lab | Description             | Status |
+|-----|-------------------------|--------|
+| 2A  | Leader Election         | ✅ Done |
+| 2B  | Log Replication         | ⏳ Pending |
+| 2C  | Persistence             | ⏳ Pending |
+
+---
+
+## 📄 Features Implemented (Lab 2A):
 
 - Raft roles: **Follower**, **Candidate**, **Leader**
-- Randomized **election timeouts** to prevent collisions
-- Safe leader election via **RequestVote RPC**
-- Timeout handling, heartbeat processing, and term updates
-- Logging for role transitions and state changes
+- **Randomized election timeouts** to reduce collisions
+- **RequestVote RPC** for safe elections
+- **Term updates** and **vote handling**
+- **Heartbeat detection** via AppendEntries
+- Logging for **timeouts**, **state changes**, and **election results**
 
 ---
 
-## 🔧 How to Run:
+## 🧪 2A Test Behavior Summary:
 
-- To test your Raft implementation:
-- cd mitraft/raft
-- go1.19 test -run 2A
+### 🔹 TestInitialElection2A
+- Nodes start as followers
+- One node times out and starts election
+- Other nodes grant votes
+- A stable leader is elected in **Term 1**
 
---- 
+### 🔹 TestReElection2A
 
-## 📊 Timeout Tuning (Experiment):
+| Term | Events |
+|------|--------|
+| 1 | Node 1 times out, gets votes → Becomes Leader |
+| 2 | Node 0 times out after heartbeat loss → Becomes Leader |
+| 3–7 | Repeated **split votes** between Node 1 and 2 (timeouts too close) |
+| 8 | Node 1 starts election, Node 2 grants vote before it can timeout → **Node 1 becomes Leader** |
 
-- Default: 200–500ms ⏱ — fast elections, more collisions
-- Custom: 300–600ms ⏱ — slower elections, slightly more stability
-- Outcome: Stable leader elected by term 10 in both cases.
+- **Split votes** occurred due to closely timed timeouts (within 5–10ms), preventing nodes from gathering majority votes.
+- **Final win** happens when a follower receives a **RequestVote** before it starts its own election.
+
+---
+
+## ⏱ Timeout Tuning (Experiment):
+
+- Configured election timeout: **150ms–300ms**
+- Result:
+  - Early leader elected in `TestInitialElection2A`
+  - Multiple re-elections and split votes in `TestReElection2A`
+- Insight:
+  - If election timers are too close (e.g., within 5–10ms), **collisions** and **vote splitting** are common
+  - More spread-out timers = more stable elections
 
 ---
 
 ## 📁 Project Structure:
 
-- raft.go           -> Core Raft logic
-- config.go         -> Cluster configuration for testing
-- persist.go        ->Persistence (2C - to be implemented)
-- test_test.go      -> Raft test harness
+| File         | Purpose                                |
+|--------------|----------------------------------------|
+| `raft.go`    | Core Raft logic: roles, elections, RPCs |
+| `config.go`  | Cluster simulation for testing         |
+| `persist.go` | Persistent state (for Lab 2C)          |
+| `test_test.go` | Raft test harness                    |
+
+---
+
+## 🔧 Run Tests:
+
+-cd mitraft/raft
+-go1.19 test -run 2A
 
 ---
 
