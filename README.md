@@ -1,5 +1,6 @@
 # Raft Distributed Systems Lab:
 
+
 # 🚀 Raft: Distributed Consensus Algorithm (MIT 6.824 Labs):
 
 This project implements the **Raft consensus algorithm** as part of the MIT 6.824 Distributed Systems course.  
