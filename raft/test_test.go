@@ -8,12 +8,14 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -29,13 +31,23 @@ func TestInitialElection2A(t *testing.T) {
 	// is a leader elected?
 	cfg.checkOneLeader()
 
-	// does the leader+term stay the same if there is no network failure?
+	// sleep a bit to avoid racing with followers learning of the
+	// election, then check that all peers agree on the term.
+	time.Sleep(50 * time.Millisecond)
 	term1 := cfg.checkTerms()
+	if term1 < 1 {
+		t.Fatalf("term is %v, but should be at least 1", term1)
+	}
+
+	// does the leader+term stay the same if there is no network failure?
 	time.Sleep(2 * RaftElectionTimeout)
 	term2 := cfg.checkTerms()
 	if term1 != term2 {
 		fmt.Printf("warning: term changed even though there were no failures")
 	}
+
+	// there should still be a leader.
+	cfg.checkOneLeader()
 
 	cfg.end()
 }
@@ -54,7 +66,7 @@ func TestReElection2A(t *testing.T) {
 	cfg.checkOneLeader()
 
 	// if the old leader rejoins, that shouldn't
-	// disturb the old leader.
+	// disturb the new leader.
 	cfg.connect(leader1)
 	leader2 := cfg.checkOneLeader()
 
@@ -77,7 +89,7 @@ func TestReElection2A(t *testing.T) {
 }
 
 func TestBasicAgree2B(t *testing.T) {
-	servers := 5
+	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
@@ -99,6 +111,39 @@ func TestBasicAgree2B(t *testing.T) {
 	cfg.end()
 }
 
+// check, based on counting bytes of RPCs, that
+// each command is sent to each peer just once.
+func TestRPCBytes2B(t *testing.T) {
+	servers := 3
+	cfg := make_config(t, servers, false)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2B): RPC byte count")
+
+	cfg.one(99, servers, false)
+	bytes0 := cfg.bytesTotal()
+
+	iters := 10
+	var sent int64 = 0
+	for index := 2; index < iters+2; index++ {
+		cmd := randstring(5000)
+		xindex := cfg.one(cmd, servers, false)
+		if xindex != index {
+			t.Fatalf("got index %v but expected %v", xindex, index)
+		}
+		sent += int64(len(cmd))
+	}
+
+	bytes1 := cfg.bytesTotal()
+	got := bytes1 - bytes0
+	expected := int64(servers) * sent
+	if got > expected+50000 {
+		t.Fatalf("too many RPC bytes; got %v, expected %v", got, expected)
+	}
+
+	cfg.end()
+}
+
 func TestFailAgree2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
@@ -108,11 +153,12 @@ func TestFailAgree2B(t *testing.T) {
 
 	cfg.one(101, servers, false)
 
-	// follower network disconnection
+	// disconnect one follower from the network.
 	leader := cfg.checkOneLeader()
 	cfg.disconnect((leader + 1) % servers)
 
-	// agree despite one disconnected server?
+	// the leader and remaining follower should be
+	// able to agree despite the disconnected follower.
 	cfg.one(102, servers-1, false)
 	cfg.one(103, servers-1, false)
 	time.Sleep(RaftElectionTimeout)
@@ -122,7 +168,9 @@ func TestFailAgree2B(t *testing.T) {
 	// re-connect
 	cfg.connect((leader + 1) % servers)
 
-	// agree with full set of servers?
+	// the full set of servers should preserve
+	// previous agreements, and be able to agree
+	// on new commands.
 	cfg.one(106, servers, true)
 	time.Sleep(RaftElectionTimeout)
 	cfg.one(107, servers, true)
@@ -137,7 +185,7 @@ func TestFailNoAgree2B(t *testing.T) {
 
 	cfg.begin("Test (2B): no agreement if too many followers disconnect")
 
-	cfg.one(10, servers, true)
+	cfg.one(10, servers, false)
 
 	// 3 of 5 followers disconnect
 	leader := cfg.checkOneLeader()
@@ -624,7 +672,6 @@ func TestPersist32C(t *testing.T) {
 	cfg.end()
 }
 
-//
 // Test the scenarios described in Figure 8 of the extended Raft paper. Each
 // iteration asks a leader, if there is one, to insert a command in the Raft
 // log.  If there is a leader, that leader will fail quickly with a high
@@ -633,7 +680,6 @@ func TestPersist32C(t *testing.T) {
 // alive servers isn't enough to form a majority, perhaps start a new server.
 // The leader in a new term may try to finish replicating log entries that
 // haven't been committed yet.
-//
 func TestFigure82C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)
