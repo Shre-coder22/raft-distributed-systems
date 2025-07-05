@@ -2,6 +2,7 @@ package raft
 
 import (
 	"fmt"
+	"math/rand"
 	"mitraft/labrpc"
 	"sync"
 	"sync/atomic"
@@ -149,21 +150,82 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) ticker() {
+	for rf.killed() == false {
+		// Randomized election timeout between 250-500ms
+		timeout := time.Duration(250+rand.Intn(250)) * time.Millisecond
+		rf.mu.Lock()
+		state := rf.state
+		elapsed := time.Since(rf.electionResetEvent)
+		rf.mu.Unlock()
+		// If we're a follower or candidate and timeout expires, start an election
+		if state != Leader && elapsed >= timeout {
+			go rf.startElection()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func (rf *Raft) startElection() {
-
 	rf.mu.Lock()
-
 	fmt.Printf("[Node %d] starting election: term=%d, votedFor=%d\n", rf.me, rf.currentTerm, rf.votedFor)
 	rf.state = Candidate
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.electionResetEvent = time.Now()
 	termAtStart := rf.currentTerm
-
+	votesReceived := 1
 	rf.mu.Unlock()
-
 	fmt.Printf("[Node %d] Starting election for term %d\n", rf.me, termAtStart)
+	for peer := range rf.peers {
+		if peer == rf.me {
+			continue
+		}
+		args := RequestVoteArgs{
+			Term:        termAtStart,
+			CandidateId: rf.me,
+		}
+		go func(peer int, args RequestVoteArgs) {
+			var reply RequestVoteReply
+			if rf.sendRequestVote(peer, &args, &reply) {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+				if reply.Term > rf.currentTerm {
+					// Step down
+					rf.currentTerm = reply.Term
+					rf.state = Follower
+					rf.votedFor = -1
+					rf.electionResetEvent = time.Now()
+					return
+				}
+				if rf.state == Candidate && rf.currentTerm == termAtStart && reply.VoteGranted {
+					votesReceived++
+					fmt.Printf("[Node %d] got vote from %d for term %d (votes: %d)\n", rf.me, peer, rf.currentTerm, votesReceived)
+					if votesReceived > len(rf.peers)/2 {
+						// Becomes leader
+						rf.state = Leader
+						rf.electionResetEvent = time.Now()
+
+						fmt.Printf("Node %d becomes leader for term %d\n", rf.me, rf.currentTerm)
+						// Start sending heartbeats
+
+					}
+				}
+			}
+		}(peer, args)
+	}
+
+	// Optional debug print to confirm failure to win election
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if rf.state != Leader && rf.currentTerm == termAtStart {
+			fmt.Printf("[Node %d] still not a leader after election in term %d\n", rf.me, termAtStart)
+		}
+	}()
 }
+
 func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 
 	rf := &Raft{}
@@ -187,5 +249,6 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	go rf.ticker()
 	return rf
 }
