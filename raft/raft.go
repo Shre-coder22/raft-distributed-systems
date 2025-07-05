@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"mitraft/labrpc"
 	"sync"
 	"sync/atomic"
@@ -93,9 +94,34 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
-// example RequestVote RPC handler.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
+// RequestVote RPC handler.
+
+func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
+
+	rf.mu.Lock()         // Protect shared state
+	defer rf.mu.Unlock() // Releases the lock before exiting
+	// fmt.Printf("[Node %d] Received RequestVote from %d for term %d (mine: %d)\n", rf.me, args.CandidateId, args.Term, rf.currentTerm)
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false // vote rejected due to stale term
+		return
+	}
+	if args.Term > rf.currentTerm {
+		rf.state = Follower
+		rf.currentTerm = args.Term
+		rf.votedFor = -1 // Reset vote due to greater term of candidate
+	}
+
+	reply.Term = rf.currentTerm // reply your current term
+	reply.VoteGranted = false
+
+	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+		rf.votedFor = args.CandidateId
+		reply.VoteGranted = true
+		fmt.Printf("[Node %d] voted for %d in term %d\n", rf.me, args.CandidateId, args.Term)
+	}
+
+	return
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
@@ -123,8 +149,23 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
+func (rf *Raft) startElection() {
+
+	rf.mu.Lock()
+
+	fmt.Printf("[Node %d] starting election: term=%d, votedFor=%d\n", rf.me, rf.currentTerm, rf.votedFor)
+	rf.state = Candidate
+	rf.currentTerm++
+	rf.votedFor = rf.me
+	rf.electionResetEvent = time.Now()
+	termAtStart := rf.currentTerm
+
+	rf.mu.Unlock()
+
+	fmt.Printf("[Node %d] Starting election for term %d\n", rf.me, termAtStart)
+}
+func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
+
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
