@@ -33,8 +33,8 @@ type Raft struct {
 	commitIndex int
 	lastApplied int
 
-	// nextIndex  []int
-	// matchIndex []int
+	nextIndex  []int
+	matchIndex []int
 
 	state              string // Follower, Candidate, Leader
 	electionResetEvent time.Time
@@ -53,6 +53,13 @@ const (
 	Leader    = "Leader"
 )
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
@@ -70,7 +77,7 @@ func (rf *Raft) persist() {
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
+	if len(data) < 1 { //data == nil ||
 		return
 	}
 	// Your code here (2C).
@@ -133,13 +140,18 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 type AppendEntriesArgs struct {
-	Term     int
-	LeaderId int
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []LogEntry
+	LeaderCommit int
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term          int
+	Success       bool
+	ConflictIndex int
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -150,19 +162,62 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
-	} else {
+	}
+
+	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.state = Follower
 		rf.votedFor = -1
-		rf.electionResetEvent = time.Now()
-		reply.Success = true
 	}
 
+	rf.electionResetEvent = time.Now()
+
+	if args.PrevLogIndex >= len(rf.log) {
+		reply.ConflictIndex = len(rf.log)
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
+	} else if args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
+		conflictTerm := rf.log[args.PrevLogIndex].Term
+		ci := args.PrevLogIndex
+
+		for ci >= 0 && rf.log[ci].Term == conflictTerm {
+			ci--
+		}
+		reply.ConflictIndex = ci + 1
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
+	}
+
+	followerIndex := args.PrevLogIndex + 1
+
+	for i := 0; i < len(args.Entries); i++ {
+		fi := followerIndex + i
+
+		if fi < len(rf.log) {
+			if rf.log[fi].Term != args.Entries[i].Term {
+				rf.log = rf.log[:fi]
+				rf.log = append(rf.log, args.Entries[i:]...)
+				break
+			}
+		} else {
+			rf.log = append(rf.log, args.Entries[i:]...)
+			break
+		}
+	}
+
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
+	}
+
+	reply.Success = true
 	reply.Term = rf.currentTerm
 }
 
@@ -177,7 +232,7 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
+	for !rf.killed() {
 		// Randomized election timeout between 250-500ms
 		timeout := time.Duration(250+rand.Intn(250)) * time.Millisecond
 		rf.mu.Lock()
@@ -240,7 +295,7 @@ func (rf *Raft) startElection() {
 
 						// Start sending heartbeats
 						go func(term int) {
-							for rf.killed() == false {
+							for !rf.killed() {
 								rf.mu.Lock()
 								if rf.state != Leader || rf.currentTerm != term {
 									rf.mu.Unlock()
