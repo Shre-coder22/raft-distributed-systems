@@ -38,7 +38,8 @@ type Raft struct {
 	state              string // Follower, Candidate, Leader
 	electionResetEvent time.Time
 
-	applyCh chan ApplyMsg
+	applyCh      chan ApplyMsg
+	logBaseIndex int
 }
 
 type LogEntry struct {
@@ -59,17 +60,12 @@ func min(a, b int) int {
 	return b
 }
 
-// return currentTerm and whether this server
-// believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return rf.currentTerm, rf.state == Leader
 }
 
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
 func (rf *Raft) persist() {
 	// Your code here (2C).
 }
@@ -85,8 +81,10 @@ func (rf *Raft) readPersist(data []byte) {
 // RequestVote RPC arguments structure.
 type RequestVoteArgs struct {
 	// Figure 2 raft paper
-	Term        int
-	CandidateId int
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 // RequestVote RPC reply structure.
@@ -129,11 +127,19 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-	// Your code here (2B).
-	return index, term, isLeader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.state != Leader {
+		return -1, rf.currentTerm, false
+	}
+
+	term := rf.currentTerm
+	newEntry := LogEntry{Command: command, Term: term}
+	rf.log = append(rf.log, newEntry)
+	index := rf.logBaseIndex + len(rf.log) - 1
+
+	return index, term, true
 }
 
 type AppendEntriesArgs struct {
@@ -149,16 +155,37 @@ type AppendEntriesReply struct {
 	Term          int
 	Success       bool
 	ConflictIndex int
+	ConflictTerm  int
+}
+
+func (rf *Raft) ApplyLog() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	for rf.commitIndex > rf.lastApplied {
+		rf.lastApplied++
+		entry := rf.log[rf.lastApplied-rf.logBaseIndex]
+		applyMsg := ApplyMsg{
+			CommandValid: true,
+			Command:      entry.Command,
+			CommandIndex: rf.lastApplied,
+		}
+		rf.mu.Unlock()
+		rf.applyCh <- applyMsg
+		rf.mu.Lock()
+	}
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.persist()
+
+	reply.Term = rf.currentTerm
+	reply.Success = false
+	reply.ConflictTerm = -1
+	reply.ConflictIndex = -1
 
 	if args.Term < rf.currentTerm {
-		reply.Term = rf.currentTerm
-		reply.Success = false
 		return
 	}
 
@@ -167,35 +194,38 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.state = Follower
 		rf.votedFor = -1
 	}
-
 	rf.electionResetEvent = time.Now()
 
-	if args.PrevLogIndex >= len(rf.log) {
-		reply.ConflictIndex = len(rf.log)
-		reply.Success = false
-		reply.Term = rf.currentTerm
+	prevLogIndex := args.PrevLogIndex
+	if prevLogIndex < rf.logBaseIndex {
+		reply.ConflictIndex = rf.logBaseIndex
 		return
-	} else if args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
-		conflictTerm := rf.log[args.PrevLogIndex].Term
-		ci := args.PrevLogIndex
-
-		for ci >= 0 && rf.log[ci].Term == conflictTerm {
-			ci--
+	}
+	if prevLogIndex >= rf.logBaseIndex+len(rf.log) {
+		reply.ConflictIndex = rf.logBaseIndex + len(rf.log)
+		return
+	}
+	if rf.log[prevLogIndex-rf.logBaseIndex].Term != args.PrevLogTerm {
+		reply.ConflictTerm = rf.log[prevLogIndex-rf.logBaseIndex].Term
+		// Find first index with this term
+		for i := prevLogIndex - 1; i >= rf.logBaseIndex; i-- {
+			if rf.log[i-rf.logBaseIndex].Term != reply.ConflictTerm {
+				reply.ConflictIndex = i + 1
+				break
+			}
 		}
-		reply.ConflictIndex = ci + 1
-		reply.Success = false
-		reply.Term = rf.currentTerm
+		if reply.ConflictIndex == -1 {
+			reply.ConflictIndex = rf.logBaseIndex
+		}
 		return
 	}
 
-	followerIndex := args.PrevLogIndex + 1
-
-	for i := 0; i < len(args.Entries); i++ {
-		fi := followerIndex + i
-
-		if fi < len(rf.log) {
-			if rf.log[fi].Term != args.Entries[i].Term {
-				rf.log = rf.log[:fi]
+	// Append new entries
+	for i, entry := range args.Entries {
+		index := args.PrevLogIndex + 1 + i
+		if index < rf.logBaseIndex+len(rf.log) {
+			if rf.log[index-rf.logBaseIndex].Term != entry.Term {
+				rf.log = rf.log[:index-rf.logBaseIndex]
 				rf.log = append(rf.log, args.Entries[i:]...)
 				break
 			}
@@ -206,48 +236,103 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if args.LeaderCommit > rf.commitIndex {
-		rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
+		rf.commitIndex = min(args.LeaderCommit, rf.logBaseIndex+len(rf.log)-1)
+		go rf.ApplyLog()
 	}
 
 	reply.Success = true
-	reply.Term = rf.currentTerm
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	if !ok {
+		return false
+	}
+
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if reply.Success {
-		rf.matchIndex[server] = len(args.Entries) + args.PrevLogIndex
-		rf.nextIndex[server] = rf.matchIndex[server] + 1
+	if args.Term != rf.currentTerm || rf.state != Leader {
+		return false
+	}
 
-		for N := len(rf.log) - 1; N > rf.commitIndex; N-- {
-			count := 0
-			for i := 0; i < len(rf.matchIndex); i++ {
-				if rf.matchIndex[i] >= N {
+	if reply.Term > rf.currentTerm {
+		rf.currentTerm = reply.Term
+		rf.state = Follower
+		rf.votedFor = -1
+		rf.electionResetEvent = time.Now()
+		return false
+	}
+
+	if reply.Success {
+		newMatch := args.PrevLogIndex + len(args.Entries)
+		rf.matchIndex[server] = newMatch
+		rf.nextIndex[server] = newMatch + 1
+
+		for N := rf.commitIndex + 1; N < rf.logBaseIndex+len(rf.log); N++ {
+			count := 1 // count self
+			for i := range rf.peers {
+				if i != rf.me && rf.matchIndex[i] >= N {
 					count++
 				}
 			}
-			if count > len(rf.peers)/2 && rf.log[N].Term == rf.currentTerm {
+			if count > len(rf.peers)/2 && rf.log[N-rf.logBaseIndex].Term == rf.currentTerm {
 				rf.commitIndex = N
-				break
+				go rf.ApplyLog()
 			}
 		}
-
 	} else {
-		if reply.Term > rf.currentTerm {
-			rf.currentTerm = reply.Term
-			rf.state = Follower
-			rf.votedFor = -1
-			rf.persist()
-			return ok
+		if reply.ConflictTerm != -1 {
+			found := false
+			for i := len(rf.log) - 1; i >= 0; i-- {
+				if rf.log[i].Term == reply.ConflictTerm {
+					rf.nextIndex[server] = rf.logBaseIndex + i
+					found = true
+					break
+				}
+			}
+			if !found {
+				rf.nextIndex[server] = reply.ConflictIndex
+			}
 		} else {
 			rf.nextIndex[server] = reply.ConflictIndex
 		}
 	}
+	return true
+}
 
-	return ok
+func (rf *Raft) broadcastAppendEntries() {
+	rf.mu.Lock()
+	term := rf.currentTerm
+	rf.mu.Unlock()
+
+	for peer := range rf.peers {
+		if peer == rf.me {
+			continue
+		}
+		go func(peer int) {
+			rf.mu.Lock()
+			if rf.state != Leader {
+				rf.mu.Unlock()
+				return
+			}
+			prevLogIndex := rf.nextIndex[peer] - 1
+			prevLogTerm := rf.log[prevLogIndex-rf.logBaseIndex].Term
+			entries := append([]LogEntry{}, rf.log[rf.nextIndex[peer]-rf.logBaseIndex:]...)
+			args := AppendEntriesArgs{
+				Term:         term,
+				LeaderId:     rf.me,
+				PrevLogIndex: prevLogIndex,
+				PrevLogTerm:  prevLogTerm,
+				Entries:      entries,
+				LeaderCommit: rf.commitIndex,
+			}
+			rf.mu.Unlock()
+
+			var reply AppendEntriesReply
+			rf.sendAppendEntries(peer, &args, &reply)
+		}(peer)
+	}
 }
 
 func (rf *Raft) Kill() {
@@ -264,65 +349,72 @@ func (rf *Raft) ticker() {
 	for !rf.killed() {
 		// Randomized election timeout between 250-500ms
 		timeout := time.Duration(250+rand.Intn(250)) * time.Millisecond
+
 		rf.mu.Lock()
 		state := rf.state
 		elapsed := time.Since(rf.electionResetEvent)
 		rf.mu.Unlock()
 
-		// If we're a follower or candidate and timeout expires, start an election
 		if state != Leader && elapsed >= timeout {
 			go rf.startElection()
 		}
 
-		time.Sleep(10 * time.Millisecond)
+		if state == Leader {
+			go rf.broadcastAppendEntries()
+		}
+
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
 func (rf *Raft) startElection() {
 	rf.mu.Lock()
 
-	// fmt.Printf("[Node %d] starting election: term=%d, votedFor=%d\n", rf.me, rf.currentTerm, rf.votedFor)
 	rf.state = Candidate
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.electionResetEvent = time.Now()
 	termAtStart := rf.currentTerm
 	votesReceived := 1
+	lastLogIndex := rf.logBaseIndex + len(rf.log) - 1
+	lastLogTerm := rf.log[len(rf.log)-1].Term
 
 	rf.mu.Unlock()
-	// fmt.Printf("[Node %d] Starting election for term %d\n", rf.me, termAtStart)
 
 	for peer := range rf.peers {
 		if peer == rf.me {
 			continue
 		}
-		args := RequestVoteArgs{
-			Term:        termAtStart,
-			CandidateId: rf.me,
-		}
-		go func(peer int, args RequestVoteArgs) {
+		go func(peer int) {
+			args := RequestVoteArgs{
+				Term:         termAtStart,
+				CandidateId:  rf.me,
+				LastLogIndex: lastLogIndex,
+				LastLogTerm:  lastLogTerm,
+			}
 			var reply RequestVoteReply
 			if rf.sendRequestVote(peer, &args, &reply) {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
+				if rf.state != Candidate || rf.currentTerm != termAtStart {
+					return
+				}
 				if reply.Term > rf.currentTerm {
-					// Step down
 					rf.currentTerm = reply.Term
 					rf.state = Follower
 					rf.votedFor = -1
 					rf.electionResetEvent = time.Now()
 					return
 				}
-				if rf.state == Candidate && rf.currentTerm == termAtStart && reply.VoteGranted {
+				if reply.VoteGranted {
 					votesReceived++
-					// fmt.Printf("[Node %d] got vote from %d for term %d (votes: %d)\n", rf.me, peer, rf.currentTerm, votesReceived)
 					if votesReceived > len(rf.peers)/2 {
-						// Becomes leader
 						rf.state = Leader
+						for i := range rf.peers {
+							rf.nextIndex[i] = rf.logBaseIndex + len(rf.log)
+							rf.matchIndex[i] = 0
+						}
 						rf.electionResetEvent = time.Now()
-						// fmt.Printf("Node %d becomes leader for term %d\n", rf.me, rf.currentTerm)
-
-						// Start sending heartbeats
 						go func(term int) {
 							for !rf.killed() {
 								rf.mu.Lock()
@@ -331,29 +423,16 @@ func (rf *Raft) startElection() {
 									return
 								}
 								rf.mu.Unlock()
-								for peer := range rf.peers {
-									if peer == rf.me {
-										continue
-									}
-									go func(peer int) {
-										args := AppendEntriesArgs{
-											Term:     term,
-											LeaderId: rf.me,
-										}
-										var reply AppendEntriesReply
-										rf.sendAppendEntries(peer, &args, &reply)
-									}(peer)
-								}
+								rf.broadcastAppendEntries()
 								time.Sleep(100 * time.Millisecond)
 							}
 						}(termAtStart)
 					}
 				}
 			}
-		}(peer, args)
+		}(peer)
 	}
 
-	// Optional debug print to confirm failure to win election
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
 		rf.mu.Lock()
@@ -366,44 +445,28 @@ func (rf *Raft) startElection() {
 
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
+
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
 
-	// Initialzing state for Labs 2A, 2B, 2C
 	rf.currentTerm = 0
 	rf.votedFor = -1
-	rf.state = Follower
-	rf.log = make([]LogEntry, 1) // dummy entry at index 0
+
+	rf.log = []LogEntry{{Term: 0}}
+	rf.logBaseIndex = 0
+
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
+
 	rf.state = Follower
 	rf.applyCh = applyCh
 	rf.electionResetEvent = time.Now()
 
-	go func() {
-		for {
-			rf.mu.Lock()
-			for rf.lastApplied < rf.commitIndex {
-				rf.lastApplied++
-
-				msg := ApplyMsg{
-					CommandValid: true,
-					Command:      rf.log[rf.lastApplied].Command,
-					CommandIndex: rf.lastApplied,
-				}
-
-				rf.mu.Unlock()
-				rf.applyCh <- msg
-				rf.mu.Lock()
-			}
-			rf.mu.Unlock()
-			time.Sleep(10 * time.Millisecond)
-		}
-	}()
-
-	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	go rf.ticker()
