@@ -159,20 +159,21 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) ApplyLog() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	for rf.commitIndex > rf.lastApplied {
+	for {
+		rf.mu.Lock()
+		if rf.commitIndex <= rf.lastApplied {
+			rf.mu.Unlock()
+			return
+		}
 		rf.lastApplied++
 		entry := rf.log[rf.lastApplied-rf.logBaseIndex]
-		applyMsg := ApplyMsg{
+		rf.mu.Unlock()
+
+		rf.applyCh <- ApplyMsg{
 			CommandValid: true,
 			Command:      entry.Command,
 			CommandIndex: rf.lastApplied,
 		}
-		rf.mu.Unlock()
-		rf.applyCh <- applyMsg
-		rf.mu.Lock()
 	}
 }
 
@@ -270,7 +271,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		rf.nextIndex[server] = newMatch + 1
 
 		for N := rf.commitIndex + 1; N < rf.logBaseIndex+len(rf.log); N++ {
-			count := 1 // count self
+			count := 1
 			for i := range rf.peers {
 				if i != rf.me && rf.matchIndex[i] >= N {
 					count++
@@ -316,9 +317,15 @@ func (rf *Raft) broadcastAppendEntries() {
 				rf.mu.Unlock()
 				return
 			}
+			if rf.nextIndex[peer] > rf.logBaseIndex+len(rf.log) {
+				return
+			}
 			prevLogIndex := rf.nextIndex[peer] - 1
 			prevLogTerm := rf.log[prevLogIndex-rf.logBaseIndex].Term
-			entries := append([]LogEntry{}, rf.log[rf.nextIndex[peer]-rf.logBaseIndex:]...)
+
+			entries := make([]LogEntry, len(rf.log[rf.nextIndex[peer]-rf.logBaseIndex:]))
+			copy(entries, rf.log[rf.nextIndex[peer]-rf.logBaseIndex:])
+
 			args := AppendEntriesArgs{
 				Term:         term,
 				LeaderId:     rf.me,
