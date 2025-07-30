@@ -1,4 +1,3 @@
-// client/src/hooks/useRaftPolling.js
 import { useEffect, useState } from "react";
 
 const POLL_INTERVAL = 1000;

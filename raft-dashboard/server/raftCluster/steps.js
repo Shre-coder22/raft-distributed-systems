@@ -44,9 +44,9 @@ export const steps = [
       { id: 5, state: "follower", term: 2 },
     ],
     messages: [
-      { fromId: 4, toId: 3, type: "appendEntries" },
-      { fromId: 4, toId: 5, type: "appendEntries" },
-      { fromId: 2, toId: 3, type: "appendEntries" },
+      { fromId: 4, toId: 3, type: "requestVote" },
+      { fromId: 4, toId: 5, type: "requestVote" },
+      { fromId: 2, toId: 3, type: "requestVote" },
     ],
   },
   {

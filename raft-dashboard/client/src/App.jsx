@@ -11,8 +11,8 @@ const App = () => {
   const handlePlay = () => setIsRunning(true);
   const handlePause = () => setIsRunning(false);
   const handleReset = () => {
-    reset();           // ⬅️ reset state immediately
-    setIsRunning(false); // ⏸️ optionally pause after reset
+    reset();           // reset state immediately
+    setIsRunning(false); //  optionally pause after reset
   };
 
   return (
