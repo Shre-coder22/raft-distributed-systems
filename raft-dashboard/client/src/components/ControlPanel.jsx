@@ -1,4 +1,3 @@
-import React from "react";
 import { Play, Pause, RotateCcw } from "lucide-react";
 
 const ControlPanel = ({ onPlay, onPause, onReset }) => {

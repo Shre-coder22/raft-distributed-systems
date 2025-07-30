@@ -34,8 +34,9 @@ const MessageArrow = ({ from, to, type }) => {
           refX="5"
           refY="3"
           orient="auto"
+          markerUnits="strokeWidth"
         >
-          <polygon points="0 0, 6 3, 0 6" fill="currentColor" />
+          <polygon points="0 0, 6 3, 0 6" fill={type === "appendEntries" ? "#4ade80" : "#facc15"} />
         </marker>
       </defs>
     </svg>

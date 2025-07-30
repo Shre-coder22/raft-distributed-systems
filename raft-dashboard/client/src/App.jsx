@@ -1,33 +1,28 @@
+import { useState } from "react";
 import ControlPanel from "./components/ControlPanel";
 import Node from "./components/Node";
-import useSimulation from "./hooks/useSimulation";
-import MessageArrow from "./components/MessageArrow";
-import messageEvents from "./data/messageEvents";
+import MessageLayer from "./components/MessageLayer";
+import useRaftPolling from "./hooks/useRaftPolling";
 
 const App = () => {
-  const { nodes, step, play, pause, reset } = useSimulation();
+  const [isRunning, setIsRunning] = useState(true);
+  const { nodes, messages, step, reset } = useRaftPolling(isRunning);
 
-  const getNodeById = (id) => nodes.find((n) => n.id === id);
-
-  const messagesToRender = messageEvents.filter((msg) => msg.step === step);
+  const handlePlay = () => setIsRunning(true);
+  const handlePause = () => setIsRunning(false);
+  const handleReset = () => {
+    reset();           // ⬅️ reset state immediately
+    setIsRunning(false); // ⏸️ optionally pause after reset
+  };
 
   return (
     <div className="relative w-screen h-screen bg-gray-900 overflow-hidden">
       <h1 className="text-4xl text-white font-bold text-center pt-6">Raft Dashboard</h1>
-      <ControlPanel onPlay={play} onPause={pause} onReset={reset} />
-
+      <ControlPanel onPlay={handlePlay} onPause={handlePause} onReset={handleReset} />
+      <MessageLayer nodes={nodes} messages={messages} />
       {nodes.map((node) => (
         <Node key={node.id} node={node} />
       ))}
-
-      {messagesToRender.map((msg, idx) => {
-        const from = getNodeById(msg.fromId)?.position;
-        const to = getNodeById(msg.toId)?.position;
-
-        return (
-          <MessageArrow key={idx} from={from} to={to} type={msg.type} />
-        );
-      })}
     </div>
   );
 };
