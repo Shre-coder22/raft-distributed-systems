@@ -23,7 +23,7 @@ function advanceStep() {
 }
 
 function resetToInitialState() {
-  console.log("🔄 Resetting Raft cluster to step 0 (term 1, all followers)");
+  console.log("Resetting Raft cluster to step 0 (term 1, all followers)");
   currentStep = 0;
 }
 
