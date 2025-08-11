@@ -16,7 +16,7 @@ const MessageLayer = ({ nodes, messages }) => {
         const fromPos = fromNode?.position;
         const toPos = toNode?.position;
 
-        // 🛑 Skip rendering arrow if positions are invalid
+        // NO arrows if positions are invalid
         if (!fromPos || !toPos) return null;
 
         return (
