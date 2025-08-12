@@ -1,105 +1,99 @@
-// raftCluster/cluster.js
 import { steps } from "./steps.js";
-import { nodePositions } from "./positions.js";
+import { nodePositions } from "./positions.js"; // ✅ import positions
 
 let currentStep = 0;
-let simulationRunning = false;
+let isRunning = false;
+let crashedNodes = new Set();
+let partitionedNodes = new Set();
+let dropProbabilities = {};
+let forceTimeoutNodes = new Set();
 
-// Fault/control state
-const crashedNodes = new Set();
-const partitionedNodes = new Set();
-let dropRate = 0; // 0..1
+const getRawStepData = (stepIndex) => {
+  return steps[stepIndex] || steps[steps.length - 1];
+};
 
-function initClusterState() {
-  currentStep = 0;
-  crashedNodes.clear();
-  partitionedNodes.clear();
-  dropRate = 0;
-}
-
-function getRawStepData(stepIndex = currentStep) {
-  const stepData = steps[stepIndex % steps.length];
-  const nodesWithPos = stepData.nodes.map((n, i) => ({
-    ...n,
-    position: nodePositions[i],
-  }));
+const getFilteredState = (stepIndex = currentStep) => {
+  const raw = getRawStepData(stepIndex);
 
   return {
     step: stepIndex,
-    nodes: nodesWithPos,
-    messages: stepData.messages || [],
-  };
-}
-
-// Filter messages according to crash/partition/drop settings
-function getFilteredState(stepIndex = currentStep) {
-  const raw = getRawStepData(stepIndex);
-  const filteredMessages = raw.messages.filter((m) => {
-    // drop if either endpoint is crashed
-    if (crashedNodes.has(m.fromId) || crashedNodes.has(m.toId)) return false;
-    // drop if either endpoint is partitioned (simple model)
-    if (partitionedNodes.has(m.fromId) || partitionedNodes.has(m.toId)) return false;
-    // random drop
-    if (Math.random() < dropRate) return false;
-    return true;
-  });
-
-  return {
-    step: raw.step,
-    nodes: raw.nodes.map((n) => ({
+    nodes: raw.nodes.map((n, i) => ({
       ...n,
-      // augment node with flags for frontend rendering
-      crashed: crashedNodes.has(n.id),
-      partitioned: partitionedNodes.has(n.id),
+      state: crashedNodes.has(n.id) ? "Crashed" : n.state,
+      position: nodePositions[i] || { left: 50, top: 50 }, // ✅ attach position
     })),
-    messages: filteredMessages,
+    messages: raw.messages.filter(
+      (m) =>
+        !crashedNodes.has(m.from) &&
+        !crashedNodes.has(m.to) &&
+        !partitionedNodes.has(m.from) &&
+        !partitionedNodes.has(m.to) &&
+        (Math.random() >= (dropProbabilities[m.from] || 0))
+    ),
   };
-}
+};
 
-function advanceStep() {
+const advanceStep = () => {
   currentStep++;
-  return getFilteredState();
-}
 
-function setStep(index) {
-  currentStep = index;
-  return getFilteredState();
-}
+  // Force timeout nodes become candidates
+  const raw = getRawStepData(currentStep);
+  raw.nodes.forEach((n) => {
+    if (forceTimeoutNodes.has(n.id) && !crashedNodes.has(n.id)) {
+      n.state = "Candidate";
+      n.term = (n.term || 0) + 1; // bump term if needed
+    }
+  });
+  forceTimeoutNodes.clear();
 
-function resetToInitialState() {
-  initClusterState();
-}
+  return getFilteredState(currentStep);
+};
 
-function startSimulation() {
-  simulationRunning = true;
-}
+const setStep = (stepIndex) => {
+  currentStep = stepIndex;
+};
 
-function pauseSimulation() {
-  simulationRunning = false;
-}
+const resetToInitialState = () => {
+  currentStep = 0;
+  isRunning = false;
+  crashedNodes.clear();
+  partitionedNodes.clear();
+  dropProbabilities = {};
+  forceTimeoutNodes.clear();
+};
 
-function isRunning() {
-  return simulationRunning;
-}
+const startSimulation = () => {
+  isRunning = true;
+};
 
-// Fault APIs
-function crashNode(nodeId) {
+const pauseSimulation = () => {
+  isRunning = false;
+};
+
+const crashNode = (nodeId) => {
   crashedNodes.add(nodeId);
-}
-function recoverNode(nodeId) {
-  crashedNodes.delete(nodeId);
-}
-function partitionNode(nodeId) {
-  partitionedNodes.add(nodeId);
-}
-function healNode(nodeId) {
-  partitionedNodes.delete(nodeId);
-}
-function setDropProbability(p) {
-  dropRate = Math.max(0, Math.min(1, Number(p) || 0));
-}
+};
 
-// Export the API the backend will call
+const recoverNode = (nodeId) => {
+  crashedNodes.delete(nodeId);
+};
+
+const partitionNode = (nodeId) => {
+  partitionedNodes.add(nodeId);
+};
+
+const healNode = (nodeId) => {
+  partitionedNodes.delete(nodeId);
+};
+
+const setDropProbability = (nodeId, probability) => {
+  dropProbabilities[nodeId] = probability;
+};
+
+const forceTimeout = (nodeId) => {
+  forceTimeoutNodes.add(nodeId);
+};
+
 export const raftCluster = {
   getFilteredState,
   getRawStepData,
@@ -108,10 +102,11 @@ export const raftCluster = {
   resetToInitialState,
   startSimulation,
   pauseSimulation,
-  isRunning,
+  isRunning: () => isRunning,
   crashNode,
   recoverNode,
   partitionNode,
   healNode,
   setDropProbability,
+  forceTimeout,
 };

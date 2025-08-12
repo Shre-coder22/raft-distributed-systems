@@ -1,4 +1,3 @@
-// backend.js
 import express from "express";
 import cors from "cors";
 import { createServer } from "http";
@@ -25,18 +24,67 @@ app.post("/raft/reset", (req, res) => {
   }
 });
 
+app.post("/nodes/:id/crash", (req, res) => {
+  try {
+    raftCluster.crashNode(parseInt(req.params.id, 10));
+    res.status(200).json({ message: `Node ${req.params.id} crashed.` });
+  } catch (err) {
+    console.error("Crash error:", err);
+    res.status(500).json({ error: "Failed to crash node" });
+  }
+});
+
+app.post("/nodes/:id/recover", (req, res) => {
+  try {
+    raftCluster.recoverNode(parseInt(req.params.id, 10));
+    res.status(200).json({ message: `Node ${req.params.id} recovered.` });
+  } catch (err) {
+    console.error("Recover error:", err);
+    res.status(500).json({ error: "Failed to recover node" });
+  }
+});
+
+app.post("/network/partition/:id", (req, res) => {
+  try {
+    raftCluster.partitionNode(parseInt(req.params.id, 10));
+    res.status(200).json({ message: `Node ${req.params.id} partitioned.` });
+  } catch (err) {
+    console.error("Partition error:", err);
+    res.status(500).json({ error: "Failed to partition node" });
+  }
+});
+
+app.post("/network/heal/:id", (req, res) => {
+  try {
+    raftCluster.healNode(parseInt(req.params.id, 10));
+    res.status(200).json({ message: `Node ${req.params.id} healed.` });
+  } catch (err) {
+    console.error("Heal error:", err);
+    res.status(500).json({ error: "Failed to heal node" });
+  }
+});
+
+app.post("/nodes/:id/force-timeout", (req, res) => {
+  try {
+    raftCluster.forceTimeout(parseInt(req.params.id, 10));
+    res.status(200).json({ message: `Node ${req.params.id} forced to timeout.` });
+  } catch (err) {
+    console.error("Force timeout error:", err);
+    res.status(500).json({ error: "Failed to force node timeout" });
+  }
+});
+
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
 // Simple broadcast helper
-function broadcast(type, payload) {
-  const msg = JSON.stringify({ type, payload });
+const broadcast = (type, payload) => {
   wss.clients.forEach((client) => {
-    if (client.readyState === 1) {
-      client.send(msg);
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify({ type, payload }));
     }
   });
-}
+};
 
 wss.on("connection", (ws) => {
   console.log("WS client connected");
@@ -55,49 +103,59 @@ wss.on("connection", (ws) => {
     const { type, payload } = msg;
     try {
       switch (type) {
-        case "start_simulation":
-          raftCluster.startSimulation();
-          ws.send(JSON.stringify({ type: "ack", payload: { ok: true, info: "started" } }));
+        case "get_state":
+          ws.send(JSON.stringify({ type: "state", payload: raftCluster.getFilteredState() }));
           break;
-        case "pause_simulation":
-          raftCluster.pauseSimulation();
-          ws.send(JSON.stringify({ type: "ack", payload: { ok: true, info: "paused" } }));
-          break;
-        case "reset_simulation":
-          raftCluster.resetToInitialState();
-          ws.send(JSON.stringify({ type: "ack", payload: { ok: true, info: "reset" } }));
-          break;
+
         case "advance_step":
-          {
-            const newState = raftCluster.advanceStep();
-            broadcast("state", newState);
-          }
+          raftCluster.advanceStep();
+          broadcast("state", raftCluster.getFilteredState());
           break;
+
+        case "reset":
+          raftCluster.resetToInitialState();
+          broadcast("state", raftCluster.getFilteredState());
+          break;
+
+        case "start":
+          raftCluster.startSimulation();
+          break;
+
+        case "pause":
+          raftCluster.pauseSimulation();
+          break;
+
         case "crash_node":
           raftCluster.crashNode(payload.nodeId);
-          ws.send(JSON.stringify({ type: "ack", payload: { ok: true } }));
           broadcast("state", raftCluster.getFilteredState());
           break;
+
         case "recover_node":
           raftCluster.recoverNode(payload.nodeId);
-          ws.send(JSON.stringify({ type: "ack", payload: { ok: true } }));
           broadcast("state", raftCluster.getFilteredState());
           break;
+
         case "partition_node":
           raftCluster.partitionNode(payload.nodeId);
-          ws.send(JSON.stringify({ type: "ack", payload: { ok: true } }));
           broadcast("state", raftCluster.getFilteredState());
           break;
+
         case "heal_node":
           raftCluster.healNode(payload.nodeId);
+          broadcast("state", raftCluster.getFilteredState());
+          break;
+
+        case "set_drop_probability":
+          raftCluster.setDropProbability(payload.nodeId, payload.probability);
+          broadcast("state", raftCluster.getFilteredState());
+          break;
+
+        case "force_timeout":
+          raftCluster.forceTimeout(payload.nodeId);
           ws.send(JSON.stringify({ type: "ack", payload: { ok: true } }));
           broadcast("state", raftCluster.getFilteredState());
           break;
-        case "drop_messages":
-          raftCluster.setDropProbability(payload.probability);
-          ws.send(JSON.stringify({ type: "ack", payload: { ok: true } }));
-          broadcast("state", raftCluster.getFilteredState());
-          break;
+
         default:
           ws.send(JSON.stringify({ type: "error", payload: { message: "unknown event" } }));
       }
