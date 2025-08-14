@@ -1,20 +1,26 @@
 import { useEffect, useState } from "react";
 
-const useStepHistory = (nodes, currentStep) => {
+const useStepHistory = (nodes, currentStep, isDynamic) => {
   const [history, setHistory] = useState([]);
   const [selectedStep, setSelectedStep] = useState(0);
 
   useEffect(() => {
     if (!nodes || nodes.length === 0) return;
 
-    setHistory((prev) => {
-      const newHistory = [...prev];
-      newHistory[currentStep] = nodes;
-      return newHistory;
-    });
-
-    setSelectedStep(currentStep);
-  }, [nodes, currentStep]);
+    if (!isDynamic) {
+      // Static mode → record history
+      setHistory((prev) => {
+        const newHistory = [...prev];
+        newHistory[currentStep] = nodes;
+        return newHistory;
+      });
+      setSelectedStep(currentStep);
+    } else {
+      // Dynamic mode → only keep latest
+      setHistory([nodes]);
+      setSelectedStep(0);
+    }
+  }, [nodes, currentStep, isDynamic]);
 
   const getNodesForStep = (step) => {
     return history[step] || [];

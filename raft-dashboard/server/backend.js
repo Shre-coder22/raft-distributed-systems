@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { createServer } from "http";
+import WebSocket from 'ws';
 import { WebSocketServer } from "ws";
 import { raftCluster } from "./raftCluster/cluster.js";
 
@@ -9,7 +10,7 @@ app.use(cors());
 app.use(express.json());
 const PORT = 4000;
 
-// Keep REST endpoints for compatibility
+// REST endpoints
 app.get("/raft/state", (req, res) => {
   res.json(raftCluster.getFilteredState());
 });
@@ -77,7 +78,6 @@ app.post("/nodes/:id/force-timeout", (req, res) => {
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
-// Simple broadcast helper
 const broadcast = (type, payload) => {
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
@@ -88,20 +88,21 @@ const broadcast = (type, payload) => {
 
 wss.on("connection", (ws) => {
   console.log("WS client connected");
-  // send initial state
   ws.send(JSON.stringify({ type: "state", payload: raftCluster.getFilteredState() }));
 
   ws.on("message", (data) => {
+    console.log("[WS] Raw incoming message:", data.toString());
     let msg;
     try {
       msg = JSON.parse(data.toString());
-    } catch (e) {
+    } catch {
       ws.send(JSON.stringify({ type: "error", payload: { message: "invalid json" } }));
       return;
     }
 
     const { type, payload } = msg;
     try {
+      console.log(`[WS] Handling message type: ${type}`);
       switch (type) {
         case "get_state":
           ws.send(JSON.stringify({ type: "state", payload: raftCluster.getFilteredState() }));
@@ -119,10 +120,12 @@ wss.on("connection", (ws) => {
 
         case "start":
           raftCluster.startSimulation();
+          broadcast("state", raftCluster.getFilteredState());
           break;
 
         case "pause":
           raftCluster.pauseSimulation();
+          broadcast("state", raftCluster.getFilteredState());  
           break;
 
         case "crash_node":
@@ -170,12 +173,20 @@ wss.on("connection", (ws) => {
   });
 });
 
-// Simulation loop: when started, advance step every POLL_INTERVAL ms and broadcast
 const POLL_INTERVAL = 1000;
 setInterval(() => {
   if (raftCluster.isRunning()) {
     const newState = raftCluster.advanceStep();
     broadcast("state", newState);
+
+    // NEW: detect static movie end + not dynamic
+    const atEnd = !raftCluster.isDynamic() &&
+      !raftCluster.isRunning() &&
+      raftCluster.getCurrentStep() >= raftCluster.getTotalSteps() - 1;
+
+    if (atEnd) {
+      broadcast("info", { message: "Reached end of static sequence." });
+    }
   }
 }, POLL_INTERVAL);
 

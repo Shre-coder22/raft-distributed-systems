@@ -16,6 +16,7 @@ const useRaftSocket = () => {
       console.log("WS connected");
     };
     ws.onmessage = (ev) => {
+      console.log("[useRaftSocket] Received raw message:", ev.data);
       try {
         const msg = JSON.parse(ev.data);
         if (msg.type === "state") {
@@ -52,6 +53,7 @@ const useRaftSocket = () => {
       console.warn("WS not open");
       return;
     }
+    console.log("[useRaftSocket] Sending:", { type, payload });
     ws.send(JSON.stringify({ type, payload }));
   }, []);
 

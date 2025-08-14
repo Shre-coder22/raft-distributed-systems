@@ -1,8 +1,10 @@
 import { motion } from "framer-motion";
 
 const arrowColors = {
-  appendEntries: "stroke-green-400",
+  appendEntries: "stroke-orange-400",
+  reply: "stroke-cyan-400",
   requestVote: "stroke-yellow-400",
+  voteGiven: "stroke-green-400",
 };
 
 const MessageArrow = ({ from, to, type }) => {

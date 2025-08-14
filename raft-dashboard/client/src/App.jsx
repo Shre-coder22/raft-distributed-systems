@@ -9,16 +9,55 @@ import NodeDetailsModal from "./components/NodeDetailsModal";
 
 const App = () => {
   const [isRunning, setIsRunning] = useState(true);
+  const [isDynamic, setIsDynamic] = useState(false);
   const { connected, state, send } = useRaftSocket(isRunning);
-  const { nodes, messages, step } = state; // make sure isRunning is in state
+  const { nodes, messages, step } = state;
   const [selectedNode, setSelectedNode] = useState(null);
 
-  // Example handlers (will be wired in Step 2)
-  const crashNode = (id) => console.log("Crash node", id);
-  const recoverNode = (id) => console.log("Recover node", id);
-  const partitionNode = (id) => console.log("Partition node", id);
-  const healNode = (id) => console.log("Heal node", id);
-  const forceTimeout = (id) => console.log("Force timeout", id);
+  const sendCommand = async (endpoint) => {
+    try {
+      await fetch(`http://localhost:4000${endpoint}`, { method: "POST" });
+    } catch (err) {
+      console.error(`Command failed: ${endpoint}`, err);
+    }
+  };
+
+  const goDynamic = () => {
+    setIsDynamic(true);
+    setIsRunning(true);   
+    send("start"); 
+  };
+
+  const crashNode = (id) => {
+    send("crash_node", { nodeId: id });
+    goDynamic();
+  };
+
+  const recoverNode = (id) => {
+    send("recover_node", { nodeId: id });
+    goDynamic();
+  };
+
+  const partitionNode = (id) => {
+    send("partition_node", { nodeId: id });
+    goDynamic();
+  };
+
+  const healNode = (id) => {
+    send("heal_node", { nodeId: id });
+    goDynamic();
+  };
+
+  const forceTimeout = (id) => {
+    send("force_timeout", { nodeId: id });
+    goDynamic();
+  };
+
+  const setDropProbability = (id, probability01) => {
+    send("set_drop_probability", { nodeId: id, probability: probability01 }); // 0..1
+    setIsDynamic(true);
+    setIsRunning(true);
+  };
 
   const handleNodeClick = (node) => {
     setSelectedNode(node);
@@ -31,24 +70,36 @@ const App = () => {
     getNodesForStep,
     totalSteps,
     resetHistory,
-  } = useStepHistory(nodes, step);
+  } = useStepHistory(nodes, step, isDynamic);
 
-   const handlePlay = () => {
-    setIsRunning(true);
-    setSelectedStep(Math.max(0, totalSteps - 1)); 
-  }
-  const handlePause = () => setIsRunning(false);
 
-  const handleReset = async () => {
-    setIsRunning(false); 
-    try {
-      await fetch("http://localhost:4000/raft/reset", { method: "POST" });
-      resetHistory(); 
-    } catch (err) {
-      console.error("Reset failed", err);
+  const handlePlay = () => {
+    if (!isDynamic) {
+      send("start"); // Tell backend to start advancing steps
     }
   };
-  const handleAdvance = () => send("advance_step");
+
+  const handlePause = () => {
+    if (!isDynamic) {
+      send("pause"); // Tell backend to pause
+    }
+  };
+
+  const handleReset = () => {
+    setIsRunning(false);
+    setIsDynamic(false);
+
+    resetHistory();         
+    setSelectedStep(0);
+
+    send("reset");
+  };
+
+  const handleAdvance = () => {
+    if (!isDynamic) {
+      send("advance_step");
+    }
+  };
 
   return (
     <div className="relative w-screen h-screen bg-gray-900 overflow-hidden flex flex-col">
@@ -64,7 +115,9 @@ const App = () => {
       <StepSlider
         currentStep={selectedStep}
         maxStep={Math.max(0, totalSteps - 1)}
-        onChange={(v) => setSelectedStep(v)}
+        onChange={(v) => {
+          if (!isDynamic) setSelectedStep(v);
+        }}
         isRunning={isRunning}
       />
 
@@ -82,13 +135,15 @@ const App = () => {
       {/* Modal */}
       {selectedNode && (
         <NodeDetailsModal
-          node={selectedNode}
+          nodeData={selectedNode}
           onClose={() => setSelectedNode(null)}
           onCrash={crashNode}
           onRecover={recoverNode}
           onPartition={partitionNode}
           onHeal={healNode}
           onForceTimeout={forceTimeout}
+          onSetDropProbability={setDropProbability}
+          isDynamic={isDynamic}
         />
       )}
     </div>
