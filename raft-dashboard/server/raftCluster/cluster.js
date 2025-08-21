@@ -1,153 +1,625 @@
+// raftCluster/cluster.js
 import { steps } from "./steps.js";
 import { nodePositions } from "./positions.js";
 
+/* =========================
+   Module state
+   ========================= */
 let currentStep = 0;
 let isRunning = false;
-let isDynamic = false; 
+
+const MODE_STATIC = "static";
+const MODE_DYNAMIC = "dynamic";
+const MODE_ELECTION = "election";
+let mode = MODE_STATIC;
+
 let crashedNodes = new Set();
-let partitionedNodes = new Set();
-let dropProbabilities = {};
 let forceTimeoutNodes = new Set();
 
-const getRawStepData = (stepIndex) => {
-  return steps[stepIndex] || steps[steps.length - 1];
+let runtime = null;        // { [id]: { role, term, votedFor, log, ... } }
+let lastMessages = [];     // used only for STATIC (steps.js) projection
+let prevLeaderSnapshot = null; // { id, term, log: [...] } captured entering election
+
+/* === In-flight message transport (for dynamic/election) === */
+let inflight = []; // [{ id, type, fromId, toId, payload, sendAt, arriveAt, onDeliver }]
+let _msgId = 1;
+const BALL_TRAVEL_MS = 1200;
+const ACK_TRAVEL_MS = 900;
+
+// election tallies (asynchronous votes)
+let electionCandidates = []; // [ids]
+let voteTally = {};          // { [candidateId]: number }
+
+/* =========================
+   Helpers / timing
+   ========================= */
+const ids = () => Object.keys(runtime || {}).map(Number).sort((a, b) => a - b);
+const now = () => Date.now();
+
+const HEARTBEAT_MS = 2400;                // visualization-friendly
+const ELECTION_TIMEOUT_MIN = 5000;        // > 2x heartbeat so steady under a leader
+const ELECTION_TIMEOUT_JITTER = 2500;
+
+const randomElectionTimeout = () =>
+  ELECTION_TIMEOUT_MIN + Math.floor(Math.random() * ELECTION_TIMEOUT_JITTER);
+
+const nextElectionDeadline = () =>
+  now() + randomElectionTimeout() + Math.floor(Math.random() * 300);
+
+const majority = () => Math.floor(ids().length / 2) + 1;
+
+// No partitions / drops anymore
+const reachable = () => true;
+const shouldDeliver = () => true;
+
+const getLeaderId = () => ids().find((id) => runtime?.[id]?.role === "leader" && !crashedNodes.has(id));
+
+let committedLogs = [];
+
+// helpers
+const aliveIds = () => ids().filter((id) => !crashedNodes.has(id));
+const majorityAlive = () => Math.floor(aliveIds().length / 2) + 1;
+
+const entryKey = (e) => e ? `${e.term}|${e.command}` : "";
+const entriesEqual = (a, b) => !!a && !!b && a.term === b.term && a.command === b.command;
+const hasCommittedPrefix = (r) => {
+  if (!r || !Array.isArray(r.log)) return false;
+  if (r.log.length < committedLogs.length) return false;
+  for (let i = 0; i < committedLogs.length; i++) {
+    const a = r.log[i], b = committedLogs[i];
+    if (!a || a.term !== b.term || a.command !== b.command) return false;
+  }
+  return true;
 };
 
-const getFilteredState = (stepIndex = currentStep) => {
-  const raw = getRawStepData(stepIndex);
+/* =========================
+   In-flight queue helpers
+   ========================= */
+const scheduleBall = ({ type, fromId, toId, payload = {}, travelMs = BALL_TRAVEL_MS, onDeliver }) => {
+  const t = now();
+  const msg = {
+    id: _msgId++,
+    type,
+    fromId,
+    toId,
+    payload,
+    sendAt: t,
+    arriveAt: t + travelMs,
+    onDeliver: typeof onDeliver === "function" ? onDeliver : () => {},
+  };
+  inflight.push(msg);
+  return msg;
+};
 
+const deliverDueMessages = () => {
+  const t = now();
+  if (inflight.length === 0) return;
+  const due = inflight.filter(m => m.arriveAt <= t);
+  if (due.length === 0) return;
+  inflight = inflight.filter(m => m.arriveAt > t);
+  for (const m of due) {
+    try { m.onDeliver?.(m); } catch (e) { /* keep sim running */ }
+  }
+};
+
+/* =========================
+   Static + Dynamic state projection
+   ========================= */
+const getRawStepData = (stepIndex) =>
+  steps[stepIndex] || steps[steps.length - 1];
+
+export const getFilteredState = (stepIndex = currentStep) => {
+  // Dynamic/Election: nodes from runtime + show in-flight balls
+  if ((mode === MODE_DYNAMIC || mode === MODE_ELECTION) && runtime) {
+    const nodesArr = ids().map((id, i) => {
+      const r = runtime[id];
+      const status = crashedNodes.has(id) ? "crashed" : "healthy";
+      return {
+        id,
+        role: r.role,
+        state: r.role,
+        status,
+        term: r.term,
+        log: r.log,
+        position: nodePositions[i] || { left: 50, top: 50 },
+      };
+    });
+
+    const msgs = inflight.map(m => ({
+      fromId: m.fromId,
+      toId: m.toId,
+      type: m.type,
+    }));
+
+    return { step: stepIndex, mode, nodes: nodesArr, messages: msgs, committed: committedLogs.slice() };
+  }
+
+  // Static movie projection
+  const raw = getRawStepData(stepIndex);
   return {
     step: stepIndex,
-    nodes: raw.nodes.map((n, i) => {
-      const crashed = crashedNodes.has(n.id);
-      const partitioned = partitionedNodes.has(n.id);
-
-      // normalize role + status
-      const role = (n.role ?? n.state ?? "").toLowerCase(); 
-      const status = crashed ? "crashed" : (partitioned ? "partitioned" : "healthy");
-
-      return {
-        ...n,
-        role,                           
-        state: n.state ?? n.role ?? "", 
-        status,                         
-        position: nodePositions[i] || { left: 50, top: 50 },
-        log: n.log || [],               
-      };
-    }),
-    messages: (raw.messages || []).filter((m) => {
-      // enforce fromId/toId naming for filters
-      const from = m.fromId ?? m.from;
-      const to   = m.toId   ?? m.to;
-      return (
-        from != null && to != null &&
-        !crashedNodes.has(from) &&
-        !crashedNodes.has(to) &&
-        !partitionedNodes.has(from) &&
-        !partitionedNodes.has(to) &&
-        (Math.random() >= (dropProbabilities[from] || 0))
-      );
-    }).map((m) => ({
+    mode,
+    nodes: (raw.nodes || []).map((n, i) => ({
+      ...n,
+      role: (n.role ?? n.state ?? "").toLowerCase(),
+      state: n.state ?? n.role ?? "",
+      status: "healthy",
+      position: nodePositions[i] || { left: 50, top: 50 },
+      log: n.log || [],
+    })),
+    messages: (raw.messages || []).map((m) => ({
       fromId: m.fromId ?? m.from,
-      toId:   m.toId   ?? m.to,
-      type:   m.type || "appendEntries",
+      toId: m.toId ?? m.to,
+      type: m.type || "appendEntries",
     })),
   };
 };
 
-const advanceStep = () => {
-  if (!isDynamic) {
+/* =========================
+   Init runtime from current static frame
+   ========================= */
+const initRuntimeFromStatic = () => {
+  const frame = getRawStepData(currentStep) || getRawStepData(0);
+  runtime = {};
+  (frame.nodes || []).forEach((n) => {
+    runtime[n.id] = {
+      role: ((n.role ?? n.state) || "follower").toLowerCase(),
+      term: n.term || 1,
+      votedFor: null,
+      log: Array.isArray(n.log) ? n.log.slice() : [],
+      commitIndex: 0,
+      lastApplied: 0,
+      nextIndex: {},
+      matchIndex: {},
+      heartbeatDueMs: Number.POSITIVE_INFINITY,
+      electionDeadlineMs: nextElectionDeadline(),
+    };
+  });
+  const lid = ids().find((id) => runtime[id]?.role === "leader");
+  if (lid) runtime[lid].heartbeatDueMs = now() + Math.min(400, HEARTBEAT_MS);
+  lastMessages = [];
+  inflight = [];
+  electionCandidates = [];
+  voteTally = {};
+  prevLeaderSnapshot = null;
+};
+
+/* =========================
+   Replication / Leader helpers
+   ========================= */
+const initLeaderReplication = (leaderId) => {
+  const lr = runtime[leaderId];
+  lr.nextIndex = {};
+  lr.matchIndex = {};
+  ids().forEach((pid) => {
+    if (pid === leaderId) return;
+    lr.nextIndex[pid] = lr.log.length;
+    lr.matchIndex[pid] = -1;
+  });
+};
+
+const becomeLeader = (id) => {
+  ids().forEach((pid) => {
+    const r = runtime[pid];
+    if (!r) return;
+    if (pid === id) {
+      r.role = "leader";
+      r.votedFor = null;
+      r.heartbeatDueMs = now() + Math.min(400, HEARTBEAT_MS); // quick first beat
+    } else {
+      if (!crashedNodes.has(pid)) r.role = "follower";
+      r.votedFor = null;
+      r.electionDeadlineMs = nextElectionDeadline();
+      r.heartbeatDueMs = Number.POSITIVE_INFINITY;
+    }
+  });
+  initLeaderReplication(id);
+};
+
+// AppendEntries balls now carry entries and mutate follower on arrival
+const sendHeartbeats = (leaderId) => {
+  const lr = runtime[leaderId];
+  if (!lr) return;
+
+  lr.heartbeatDueMs = now() + HEARTBEAT_MS;
+
+  ids().forEach((fid) => {
+    if (fid === leaderId) return;
+    if (crashedNodes.has(fid)) return;
+
+    const fr = runtime[fid];
+
+    // decide exactly one entry to send this beat:
+    // 1) If follower is behind global committed prefix → send the next committed entry.
+    // 2) Else if follower behind leader’s log → send the next uncommitted entry.
+    // 3) Else → pure heartbeat (no entries).
+    const nextIndex = fr.log.length;
+
+    let oneEntry = null;
+    if (nextIndex < committedLogs.length) {
+      oneEntry = committedLogs[nextIndex];               // replicate committed first
+    } else if (nextIndex < lr.log.length) {
+      oneEntry = lr.log[nextIndex];                      // then uncommitted, one by one
+    }
+
+    scheduleBall({
+      type: "appendEntries",
+      fromId: leaderId,
+      toId: fid,
+      payload: { term: lr.term, entries: oneEntry ? [oneEntry] : [] },
+      travelMs: BALL_TRAVEL_MS,
+      onDeliver: ({ payload }) => {
+        if (crashedNodes.has(fid)) return;
+
+        // demote & sync term up; refresh timer
+        if ((payload.term || 0) >= (fr.term || 0)) {
+          fr.role = "follower";
+          fr.term = Math.max(fr.term || 0, payload.term || 0);
+          fr.electionDeadlineMs = nextElectionDeadline();
+        }
+
+        if (Array.isArray(payload.entries) && payload.entries.length === 1) {
+          // append exactly one entry
+          const e = payload.entries[0];
+          // If follower had a conflicting tail, simplify: overwrite-at-nextIndex behavior
+          if (fr.log.length === nextIndex) {
+            fr.log.push({ term: e.term, command: e.command });
+          } else {
+            fr.log[nextIndex] = { term: e.term, command: e.command };
+            fr.log = fr.log.slice(0, nextIndex + 1);
+          }
+        }
+
+        // ACK back with new matchIndex and re-check global commit
+        const matchIndex = fr.log.length - 1;
+        scheduleBall({
+          type: "appendEntriesReply",
+          fromId: fid,
+          toId: leaderId,
+          travelMs: ACK_TRAVEL_MS,
+          payload: { matchIndex },
+          onDeliver: ({ payload: ack }) => {
+            if (crashedNodes.has(leaderId)) return;
+            lr.matchIndex = lr.matchIndex || {};
+            lr.nextIndex  = lr.nextIndex  || {};
+            lr.matchIndex[fid] = ack.matchIndex;
+            lr.nextIndex[fid]  = ack.matchIndex + 1;
+
+            // Leader-side commit (classic Raft)
+            updateCommitIndex(leaderId);
+            // Global majority-based commit ledger
+            recomputeCommittedFromMajority();
+          }
+        });
+      }
+    });
+  });
+};
+
+const updateCommitIndex = (leaderId) => {
+  const lr = runtime[leaderId];
+  if (!lr || !lr.matchIndex) return;
+
+  for (let N = lr.log.length - 1; N > lr.commitIndex; N--) {
+    const replicated = 1 + ids().filter((pid) => {
+      if (pid === leaderId) return false;
+      const mi = lr.matchIndex?.[pid] ?? -1;
+      return mi >= N;
+    }).length;
+
+    if (replicated >= majority() && lr.log[N]?.term === lr.term) {
+      lr.commitIndex = N;
+      break;
+    }
+  }
+  applyCommitted();
+};
+
+const applyCommitted = () => {
+  ids().forEach((id) => {
+    const r = runtime[id];
+    if (!r) return;
+    while (r.lastApplied < r.commitIndex) {
+      r.lastApplied++;
+      // apply r.log[r.lastApplied] to a state machine (omitted)
+    }
+  });
+};
+
+const recomputeCommittedFromMajority = () => {
+  // Start from where we left off
+  let idx = committedLogs.length;
+
+  // We try to extend the committed prefix as long as we can
+  while (true) {
+    // tally entries present at index idx across alive nodes
+    const tally = new Map(); // key -> {entry, count}
+    for (const id of aliveIds()) {
+      const r = runtime[id]; if (!r) continue;
+      const e = r.log[idx];
+      if (!e) continue;
+      const key = entryKey(e);
+      const slot = tally.get(key);
+      if (slot) slot.count += 1;
+      else tally.set(key, { entry: e, count: 1 });
+    }
+
+    if (tally.size === 0) break; // nobody has an entry here
+
+    // pick the most common entry
+    let best = null;
+    for (const v of tally.values()) {
+      if (!best || v.count > best.count) best = v;
+    }
+
+    if (!best || best.count < majorityAlive()) break;
+
+    // we have a majority for this index; append to global committed if new
+    if (!entriesEqual(committedLogs[idx], best.entry)) {
+      committedLogs[idx] = { term: best.entry.term, command: best.entry.command };
+    }
+    idx += 1;
+  }
+};
+
+/* =========================
+   Election helpers (asynchronous RV)
+   ========================= */
+const eligibleForElection = (id) => {
+  if (crashedNodes.has(id)) return false;
+  const r = runtime[id]; if (!r) return false;
+  if (!prevLeaderSnapshot) return true;
+
+  const sameLen = (r.log?.length || 0) === (prevLeaderSnapshot.log?.length || 0);
+  const sameEntries =
+    sameLen && r.log.every((e, i) =>
+      e.term === prevLeaderSnapshot.log[i].term &&
+      e.command === prevLeaderSnapshot.log[i].command
+    );
+
+  // prefer highest observed term
+  const maxTerm = Math.max(...ids().filter(n => !crashedNodes.has(n)).map(n => runtime[n].term || 1));
+  return sameEntries && (r.term || 1) >= maxTerm;
+};
+
+const pickCandidates = () => {
+  const elig = ids().filter(eligibleForElection);
+  for (let i = elig.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [elig[i], elig[j]] = [elig[j], elig[i]];
+  }
+  return elig.slice(0, 2); // up to two
+};
+
+// schedule RV messages; votes are tallied on voteGiven arrival
+const scheduleRequestVotes = (candidateId) => {
+  const c = runtime[candidateId];
+  if (!c) return;
+
+  // promote this tick
+  c.role = "candidate";
+  c.term = (c.term || 0) + 1;
+  c.votedFor = candidateId;
+
+  const cLastIdx  = c.log.length - 1;
+  const cLastTerm = cLastIdx >= 0 ? (c.log[cLastIdx].term || 0) : 0;
+
+  // self vote
+  voteTally[candidateId] = (voteTally[candidateId] || 0) + 1;
+
+  ids().forEach((pid) => {
+    if (pid === candidateId) return;
+    if (!reachable(candidateId, pid)) return;
+    if (crashedNodes.has(pid)) return;
+
+    const pr = runtime[pid];
+
+    scheduleBall({
+      type: "requestVote",
+      fromId: candidateId,
+      toId: pid,
+      travelMs: BALL_TRAVEL_MS,
+      payload: {
+        term: c.term,
+        candidateId,
+        lastLogIndex: cLastIdx,
+        lastLogTerm:  cLastTerm,
+      },
+      onDeliver: ({ payload }) => {
+        if (crashedNodes.has(pid)) return;
+
+        // bump term & demote if candidate has strictly higher term (Raft §5.1)
+        if ((pr.term || 0) < payload.term) {
+          pr.term = payload.term;
+          if (pr.role === "leader") {
+            pr.role = "follower";
+            pr.heartbeatDueMs = Number.POSITIVE_INFINITY;
+          }
+          pr.votedFor = null;
+        }
+
+        // up-to-date check
+        const candidateHasPrefix = hasCommittedPrefix(runtime[payload.candidateId]);
+        const fLastIdx  = pr.log.length - 1;
+        const fLastTerm = fLastIdx >= 0 ? (pr.log[fLastIdx].term || 0) : 0;
+        const candidateUpToDate =
+          candidateHasPrefix &&
+          ((payload.lastLogTerm > fLastTerm) ||
+          (payload.lastLogTerm === fLastTerm && payload.lastLogIndex >= fLastIdx));
+
+        const canGrant = (pr.votedFor === null || pr.votedFor === payload.candidateId);
+
+        if (candidateUpToDate && canGrant) {
+          pr.votedFor = payload.candidateId;
+          pr.electionDeadlineMs = nextElectionDeadline();
+          scheduleBall({
+            type: "voteGiven",
+            fromId: pid,
+            toId: payload.candidateId,
+            travelMs: ACK_TRAVEL_MS,
+            payload: { granted: true },
+            onDeliver: ({ toId }) => {
+              voteTally[toId] = (voteTally[toId] || 0) + 1;
+            }
+          });
+        }
+      }
+    });
+  });
+};
+
+const runElectionStep = () => {
+  // first election step: pick & schedule RVs
+  if (electionCandidates.length === 0) {
+    // Snapshot previous leader once
+    if (!prevLeaderSnapshot) {
+      const prevId = getLeaderId();
+      if (prevId) {
+        prevLeaderSnapshot = {
+          id: prevId,
+          term: runtime[prevId].term || 1,
+          log: (runtime[prevId].log || []).slice(),
+        };
+      }
+    }
+    electionCandidates = pickCandidates();
+    voteTally = {};
+    electionCandidates.forEach(cid => scheduleRequestVotes(cid));
+  }
+  // subsequent steps just wait for voteGiven deliveries,
+  // majority check happens in advanceStep after deliverDueMessages()
+};
+
+/* =========================
+   Main stepper
+   ========================= */
+export const setStep = (stepIndex) => { currentStep = stepIndex; };
+export const getCurrentStep = () => currentStep;
+export const getTotalSteps = () => (steps?.length || 0);
+
+export const advanceStep = () => {
+  if (mode === MODE_STATIC) {
+    // static movie
     if (currentStep < steps.length - 1) {
       currentStep++;
     } else {
-      // reached the end of the static movie -> pause
-      isRunning = false;
-      return getFilteredState(currentStep);
+      isRunning = false; // end of movie
     }
-  } else {
-    currentStep++; 
+    return getFilteredState(currentStep);
   }
 
-  // forced timeouts
-  const raw = getRawStepData(currentStep);
-  raw.nodes.forEach((n) => {
-    if (forceTimeoutNodes.has(n.id) && !crashedNodes.has(n.id)) {
-      n.state = "candidate";
-      n.term = (n.term || 0) + 1;
-    }
-  });
-  forceTimeoutNodes.clear();
+  // deliver any messages that arrived since last tick
+  deliverDueMessages();
+  recomputeCommittedFromMajority();
+  // After delivering RVs/ACKs, if no leader exists → enter election mode.
+  if (mode === MODE_DYNAMIC && !getLeaderId()) {
+    // re-seed prevLeaderSnapshot if we just lost one (optional)
+    // prevLeaderSnapshot ||= ... (you can keep as-is)
+    electionCandidates = [];
+    voteTally = {};
+    mode = MODE_ELECTION;
+  }
 
+  if (mode === MODE_ELECTION) {
+    // run scheduling on first step only; afterwards, just tally
+    runElectionStep();
+
+    // check majority after deliveries
+    const winnerEntry = Object.entries(voteTally).find(([, count]) => count >= majority());
+    if (winnerEntry) {
+      const winner = Number(winnerEntry[0]);
+      becomeLeader(winner);
+      // celebrate + quick beat
+      scheduleBall({ type: "elected", fromId: winner, toId: winner, travelMs: 200 });
+      const lr = runtime[winner];
+      if (lr) lr.heartbeatDueMs = Math.min(lr.heartbeatDueMs || Infinity, now() + 200);
+      mode = MODE_DYNAMIC;
+      electionCandidates = [];
+      voteTally = {};
+    }
+  } else {
+    // MODE_DYNAMIC: normal live operation (no leader change here)
+    // forced timeouts are visual-only
+    forceTimeoutNodes.forEach((nid) => {
+      const r = runtime?.[nid];
+      if (r && !crashedNodes.has(nid)) {
+        r.role = "candidate";
+        r.term = (r.term || 0) + 1;
+        r.votedFor = nid;
+        r.electionDeadlineMs = nextElectionDeadline();
+        // visual pulse to self
+        scheduleBall({ type: "becameCandidate", fromId: nid, toId: nid, travelMs: 200 });
+      }
+    });
+    forceTimeoutNodes.clear();
+
+    // Heartbeats when due → schedule AE balls
+    const leaderId = getLeaderId();
+    if (leaderId && now() >= (runtime[leaderId].heartbeatDueMs || 0)) {
+      sendHeartbeats(leaderId);
+    }
+  }
+
+  currentStep++;
   return getFilteredState(currentStep);
 };
 
-const setStep = (stepIndex) => {
-  currentStep = stepIndex;
-};
-
-const getCurrentStep = () => currentStep;
-const getTotalSteps = () => (steps?.length || 0);
-
-const goDynamic = () => {
-  isDynamic = true;
-};
-
-const now = () => Date.now();
-const getLeaderId = () => ids().find(id => runtime?.[id]?.role === "leader" && !crashedNodes.has(id));
-
-const resetToInitialState = () => {
-  console.log("[Cluster] Resetting simulation to step 0");
+/* =========================
+   Controls
+   ========================= */
+export const resetToInitialState = () => {
   currentStep = 0;
   isRunning = false;
-  isDynamic = false;
+  mode = MODE_STATIC;
   crashedNodes.clear();
-  partitionedNodes.clear();
-  dropProbabilities = {};
   forceTimeoutNodes.clear();
+  prevLeaderSnapshot = null;
+  runtime = null;
+  lastMessages = [];
+  inflight = [];
+  electionCandidates = [];
+  voteTally = {};
+  committedLogs = [];
 };
 
-const startSimulation = () => {
-  console.log("[Cluster] Simulation started"); // startSimulation
-  isRunning = true;
+export const startSimulation = () => { isRunning = true; };
+export const pauseSimulation = () => { isRunning = false; };
+
+const ensureDynamic = () => {
+  if (mode === MODE_STATIC) {
+    initRuntimeFromStatic();
+    mode = MODE_DYNAMIC;
+  }
 };
 
-const pauseSimulation = () => {
-  console.log("[Cluster] Simulation paused"); // pauseSimulation
-  isRunning = false;
-};
+/* =========================
+   Fault injection + client actions
+   ========================= */
+export const crashNode = (nodeId) => {
+  ensureDynamic();
 
-const crashNode = (nodeId) => {
-  goDynamic();
+  // Was this node the leader BEFORE we mark it crashed?
+  const wasLeader = !!runtime?.[nodeId] && runtime[nodeId].role === "leader";
+
   crashedNodes.add(nodeId);
-  console.log("[Cluster] crashNode", nodeId, "→ crashedNodes:", [...crashedNodes]);
 
-  if (!runtime) return;
-  const r = runtime[nodeId];
-  if (r) {
-    if (r.role === "leader") {
-      r.heartbeatDueMs = Number.POSITIVE_INFINITY;
-    }
-    r.role = r.role === "leader" ? "follower" : r.role;
-  }
-
-  const leaderId = getLeaderId();
-  const leaderCrashed = leaderId === undefined; // no healthy leader left
-
-  if (leaderCrashed) {
-    // accelerate elections on all healthy, non-partitioned followers
-    ids().forEach(fid => {
-      if (crashedNodes.has(fid) || partitionedNodes.has(fid)) return;
-      const f = runtime[fid];
-      if (!f) return;
-      f.votedFor = null;
-      f.electionDeadlineMs = now(); // triggers startElection on next tick
-    });
+  if (wasLeader) {
+    // snapshot the old leader for eligibility checks
+    prevLeaderSnapshot = {
+      id: nodeId,
+      term: runtime[nodeId].term || 1,
+      log: (runtime[nodeId].log || []).slice(),
+    };
+    // clear any in-flight and kick into election mode
+    inflight = inflight.filter(m => !(m.fromId === nodeId || m.toId === nodeId));
+    electionCandidates = [];
+    voteTally = {};
+    mode = MODE_ELECTION;
   }
 };
 
-const recoverNode = (nodeId) => {
+export const recoverNode = (nodeId) => {
   crashedNodes.delete(nodeId);
-  console.log("[Cluster] recoverNode", nodeId, "→ crashedNodes:", [...crashedNodes]);
 
   if (!runtime) return;
   if (!runtime[nodeId]) {
@@ -159,108 +631,95 @@ const recoverNode = (nodeId) => {
       commitIndex: 0,
       lastApplied: 0,
       heartbeatDueMs: Number.POSITIVE_INFINITY,
-      electionDeadlineMs: now() + randomElectionTimeout(),
+      electionDeadlineMs: nextElectionDeadline(),
     };
   }
 
   const r = runtime[nodeId];
   r.role = "follower";
   r.votedFor = null;
-  r.heartbeatDueMs = Number.POSITIVE_INFINITY;     // follower doesn’t schedule heartbeats
-  r.electionDeadlineMs = now() + randomElectionTimeout();
+  r.heartbeatDueMs = Number.POSITIVE_INFINITY;
+  r.electionDeadlineMs = nextElectionDeadline();
 
   const leaderId = getLeaderId();
-  if (!leaderId) {
-    r.electionDeadlineMs = now() + Math.min(800, randomElectionTimeout());
-  } else {
+  if (leaderId) {
     const lr = runtime[leaderId];
-    if (lr && reachable(leaderId, nodeId)) {
-      r.term = Math.max(r.term || 0, lr.term || 0);
-    }
+    r.term = Math.max(r.term || 0, lr.term || 0);
   }
 };
 
-const partitionNode = (nodeId) => {
-  goDynamic();
-  partitionedNodes.add(nodeId);
-  console.log("[Cluster] partitionNode", nodeId, "→ partitionedNodes:", [...partitionedNodes]);
-
+export const forceTimeout = (nodeId) => {
+  ensureDynamic();
   if (!runtime) return;
-
-  const leaderId = getLeaderId();
-  const leaderIsolated = leaderId === nodeId;
-
-  if (leaderIsolated) {
-    ids().forEach(fid => {
-      if (fid === nodeId) return;
-      const r = runtime[fid];
-      if (!r) return;
-      if (!crashedNodes.has(fid) && !partitionedNodes.has(fid)) {
-        r.votedFor = null;
-        r.role = r.role === "leader" ? "follower" : r.role; 
-        r.electionDeadlineMs = now(); // will startElection on next tick
-      }
-    });
-  }
-};
-
-const healNode = (nodeId) => {
-  partitionedNodes.delete(nodeId);
-  console.log("[Cluster] healNode", nodeId, "→ partitionedNodes:", [...partitionedNodes]);
-
-  if (!runtime) return;
+  if (crashedNodes.has(nodeId)) return;
 
   const r = runtime[nodeId];
   if (!r) return;
 
-  const otherLeader = ids().find(id => id !== nodeId && runtime[id]?.role === "leader" && !crashedNodes.has(id));
-  if (otherLeader) {
-    r.role = "follower";
-    r.votedFor = null;
-  }
-  r.electionDeadlineMs = now() + randomElectionTimeout();
+  // Only followers can be forced to timeout
+  if (r.role !== "follower") return;
+
+  // Align to (at least) current leader term but DO NOT increment here.
+  const currentLeader = getLeaderId();
+  const leaderTerm = currentLeader ? (runtime[currentLeader].term || 0) : (r.term || 0);
+  r.term = Math.max(r.term || 0, leaderTerm);
+
+  r.role = "candidate";
+  r.votedFor = nodeId;
+  r.electionDeadlineMs = nextElectionDeadline();
+
+  // Start RV campaign immediately (this will do the single +1)
+  electionCandidates = [nodeId];
+  voteTally = {};
+  scheduleRequestVotes(nodeId);
+
+  // Stay in MODE_DYNAMIC; leader will demote upon receiving higher-term RV.
 };
 
-// Default per-node message drop probability (0.1).
-const setDropProbability = (nodeId, probability) => {
-  goDynamic();
-  console.log("[Cluster] setDropProbability", nodeId, "=", probability, "→ dropProbabilities:", { ...dropProbabilities });
-
-  const p = Math.max(0, Math.min(1, Number(probability) || 0));
-  dropProbabilities[nodeId] = p;
-};
-
-// Force a node's election timeout right now.
-const forceTimeout = (nodeId) => {
-  goDynamic();
-  forceTimeoutNodes.add(nodeId);
-  console.log("[Cluster] forceTimeout", nodeId, "→ forceTimeoutNodes:", [...forceTimeoutNodes]);
-
+export const clientCommand = (command, nodeId) => {
+  ensureDynamic();
   if (!runtime) return;
-  const r = runtime[nodeId];
-  if (!r) return;
 
-  r.votedFor = null;
-  r.electionDeadlineMs = now(); // triggers election on next dynamic tick
+  const leaderId = nodeId ?? getLeaderId();
+  if (!leaderId) throw new Error("No leader to accept client command");
+  if (crashedNodes.has(leaderId)) throw new Error("Leader unavailable");
+
+  const lr = runtime[leaderId];
+  const cmd = String(command || "").trim();
+  if (!cmd) return;
+
+  lr.log = (lr.log || []).concat([{ term: lr.term || 1, command: cmd }]);
+  lr.heartbeatDueMs = Math.min(lr.heartbeatDueMs || Infinity, now() + 120);
+  // recomputeCommittedFromMajority();
 };
 
+export const dropLatestLog = (nodeId) => {
+  ensureDynamic();
+  const r = runtime?.[nodeId];
+  if (!r || crashedNodes.has(nodeId)) return;
+  if (Array.isArray(r.log) && r.log.length > 0) {
+    r.log = r.log.slice(0, r.log.length - 1);
+  }
+};
+
+/* =========================
+   Public API (for backend.js)
+   ========================= */
 export const raftCluster = {
   getFilteredState,
   getRawStepData,
   advanceStep,
   setStep,
-  getCurrentStep,
-  getTotalSteps,
+  getCurrentStep: () => currentStep,
+  getTotalSteps: () => (steps?.length || 0),
   resetToInitialState,
   startSimulation,
   pauseSimulation,
   isRunning: () => isRunning,
-  isDynamic: () => isDynamic,
+  isDynamic: () => mode !== MODE_STATIC,
   crashNode,
   recoverNode,
-  partitionNode,
-  healNode,
-  setDropProbability,
   forceTimeout,
-  goDynamic,
+  clientCommand,
+  dropLatestLog,
 };

@@ -1,68 +1,24 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import useRaftSocket from "./hooks/useRaftSocket";
 import useStepHistory from "./hooks/useStepHistory";
 import StepSlider from "./components/StepSlider";
 import ControlPanel from "./components/ControlPanel";
 import Node from "./components/Node";
-import MessageLayer from "./components/MessageLayer";
+import HeartbeatBallsLayer from "./components/HeartbeatBallsLayer";
 import NodeDetailsModal from "./components/NodeDetailsModal";
+import ElectionCelebration from "./components/ElectionCelebration";
+import Legend from "./components/Legend";
+import CommittedBar from "./components/CommittedBar";
 
 const App = () => {
   const [isRunning, setIsRunning] = useState(true);
-  const [isDynamic, setIsDynamic] = useState(false);
   const { connected, state, send } = useRaftSocket(isRunning);
-  const { nodes, messages, step } = state;
-  const [selectedNode, setSelectedNode] = useState(null);
 
-  const sendCommand = async (endpoint) => {
-    try {
-      await fetch(`http://localhost:4000${endpoint}`, { method: "POST" });
-    } catch (err) {
-      console.error(`Command failed: ${endpoint}`, err);
-    }
-  };
+  // Drive UI mode from backend (static | dynamic | election)
+  const backendMode = state.mode || "static";
+  const isDynamic = backendMode !== "static";
 
-  const goDynamic = () => {
-    setIsDynamic(true);
-    setIsRunning(true);   
-    send("start"); 
-  };
-
-  const crashNode = (id) => {
-    send("crash_node", { nodeId: id });
-    goDynamic();
-  };
-
-  const recoverNode = (id) => {
-    send("recover_node", { nodeId: id });
-    goDynamic();
-  };
-
-  const partitionNode = (id) => {
-    send("partition_node", { nodeId: id });
-    goDynamic();
-  };
-
-  const healNode = (id) => {
-    send("heal_node", { nodeId: id });
-    goDynamic();
-  };
-
-  const forceTimeout = (id) => {
-    send("force_timeout", { nodeId: id });
-    goDynamic();
-  };
-
-  const setDropProbability = (id, probability01) => {
-    send("set_drop_probability", { nodeId: id, probability: probability01 }); // 0..1
-    setIsDynamic(true);
-    setIsRunning(true);
-  };
-
-  const handleNodeClick = (node) => {
-    setSelectedNode(node);
-  };
-
+  // keep history only for static movie
   const {
     history,
     selectedStep,
@@ -70,35 +26,65 @@ const App = () => {
     getNodesForStep,
     totalSteps,
     resetHistory,
-  } = useStepHistory(nodes, step, isDynamic);
+  } = useStepHistory(state.nodes || [], state.step || 0, isDynamic);
 
+  // const isStatic = backendMode === "static";
+  // const isAtLatest = selectedStep === Math.max(0, totalSteps - 1);
 
+  const messagesToRender = state.messages || [];
+  const isAtLatest = selectedStep === Math.max(0, totalSteps - 1);
+
+  const nodesToRender = useMemo(() => {
+    return backendMode === "static"
+      ? getNodesForStep(selectedStep)
+      : (state.nodes || []);
+  }, [backendMode, getNodesForStep, selectedStep, state.nodes]);
+
+  const [selectedNode, setSelectedNode] = useState(null);
+
+  const goDynamic = () => {
+    // backend decides mode; we just ensure ticking
+    setIsRunning(true);
+    send("start");
+  };
+
+  // Fault buttons -> send WS and ensure ticking
+  const crashNode = (id) => {
+    send("crash_node", { nodeId: id });
+    goDynamic();
+  };
+  const recoverNode = (id) => {
+    send("recover_node", { nodeId: id });
+    goDynamic();
+  };
+  const forceTimeout = (id) => {
+    send("force_timeout", { nodeId: id });
+    goDynamic();
+  };
+
+  const handleNodeClick = (node) => setSelectedNode(node);
+
+  // Controls
   const handlePlay = () => {
-    if (!isDynamic) {
-      send("start"); // Tell backend to start advancing steps
-    }
+    setIsRunning(true);
+    send("start");
+    send("get_state");
   };
 
   const handlePause = () => {
-    if (!isDynamic) {
-      send("pause"); // Tell backend to pause
-    }
+    setIsRunning(false);
+    send("pause");
   };
 
   const handleReset = () => {
     setIsRunning(false);
-    setIsDynamic(false);
-
-    resetHistory();         
-    setSelectedStep(0);
-
-    send("reset");
+    resetHistory();           // reset the static slider cache
+    send("reset");            // backend back to static movie
+    send("get_state");
   };
 
   const handleAdvance = () => {
-    if (!isDynamic) {
-      send("advance_step");
-    }
+    if (backendMode === "static") send("advance_step");
   };
 
   return (
@@ -111,25 +97,37 @@ const App = () => {
         onStepForward={handleAdvance}
       />
 
-      {/* Step slider */}
+      {/* Step slider (disabled during dynamic/election) */}
       <StepSlider
         currentStep={selectedStep}
         maxStep={Math.max(0, totalSteps - 1)}
-        onChange={(v) => {
-          if (!isDynamic) setSelectedStep(v);
-        }}
+        onChange={(v) => { if (backendMode === "static") setSelectedStep(v); }}
         isRunning={isRunning}
+        disabled={backendMode !== "static"}
       />
+
+      {/* Committed logs ribbon */}
+      <CommittedBar committed={(state.committed) || []} />
 
       {/* Main simulation area */}
       <div className="flex-1 relative">
-        <MessageLayer
+        {/* Always feed backend messages so election balls show up */}
+        <HeartbeatBallsLayer
           nodes={getNodesForStep(selectedStep)}
-          messages={isRunning ? messages : []}
+          messages={messagesToRender}
+          isRunning={isRunning}
+          isAtLatest={backendMode !== "static" ? true : isAtLatest}
         />
-        {getNodesForStep(selectedStep).map((node) => (
+
+        <ElectionCelebration
+          nodes={nodesToRender}
+          messages={messagesToRender}
+        />
+
+        {nodesToRender.map((node) => (
           <Node key={node.id} node={node} onClick={handleNodeClick} />
         ))}
+        <Legend />
       </div>
 
       {/* Modal */}
@@ -139,11 +137,9 @@ const App = () => {
           onClose={() => setSelectedNode(null)}
           onCrash={crashNode}
           onRecover={recoverNode}
-          onPartition={partitionNode}
-          onHeal={healNode}
           onForceTimeout={forceTimeout}
-          onSetDropProbability={setDropProbability}
           isDynamic={isDynamic}
+          send={send}
         />
       )}
     </div>

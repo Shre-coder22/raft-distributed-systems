@@ -45,26 +45,6 @@ app.post("/nodes/:id/recover", (req, res) => {
   }
 });
 
-app.post("/network/partition/:id", (req, res) => {
-  try {
-    raftCluster.partitionNode(parseInt(req.params.id, 10));
-    res.status(200).json({ message: `Node ${req.params.id} partitioned.` });
-  } catch (err) {
-    console.error("Partition error:", err);
-    res.status(500).json({ error: "Failed to partition node" });
-  }
-});
-
-app.post("/network/heal/:id", (req, res) => {
-  try {
-    raftCluster.healNode(parseInt(req.params.id, 10));
-    res.status(200).json({ message: `Node ${req.params.id} healed.` });
-  } catch (err) {
-    console.error("Heal error:", err);
-    res.status(500).json({ error: "Failed to heal node" });
-  }
-});
-
 app.post("/nodes/:id/force-timeout", (req, res) => {
   try {
     raftCluster.forceTimeout(parseInt(req.params.id, 10));
@@ -138,25 +118,21 @@ wss.on("connection", (ws) => {
           broadcast("state", raftCluster.getFilteredState());
           break;
 
-        case "partition_node":
-          raftCluster.partitionNode(payload.nodeId);
+        case "client_command":
+          raftCluster.goDynamic?.(); // ensure dynamic mode
+          raftCluster.clientCommand(payload.command, payload.nodeId);
           broadcast("state", raftCluster.getFilteredState());
           break;
-
-        case "heal_node":
-          raftCluster.healNode(payload.nodeId);
-          broadcast("state", raftCluster.getFilteredState());
-          break;
-
-        case "set_drop_probability":
-          raftCluster.setDropProbability(payload.nodeId, payload.probability);
-          broadcast("state", raftCluster.getFilteredState());
-          break;
-
+        
         case "force_timeout":
           raftCluster.forceTimeout(payload.nodeId);
           ws.send(JSON.stringify({ type: "ack", payload: { ok: true } }));
           broadcast("state", raftCluster.getFilteredState());
+          break;
+
+        case "drop_latest_log":
+          raftCluster.dropLatestLog(payload.nodeId);  
+          broadcast("state",raftCluster.getFilteredState());
           break;
 
         default:
@@ -173,7 +149,7 @@ wss.on("connection", (ws) => {
   });
 });
 
-const POLL_INTERVAL = 1000;
+const POLL_INTERVAL = 2000;
 setInterval(() => {
   if (raftCluster.isRunning()) {
     const newState = raftCluster.advanceStep();
