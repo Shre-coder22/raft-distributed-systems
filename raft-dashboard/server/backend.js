@@ -155,7 +155,7 @@ setInterval(() => {
     const newState = raftCluster.advanceStep();
     broadcast("state", newState);
 
-    // NEW: detect static movie end + not dynamic
+    // Detect static movie end + not dynamic
     const atEnd = !raftCluster.isDynamic() &&
       !raftCluster.isRunning() &&
       raftCluster.getCurrentStep() >= raftCluster.getTotalSteps() - 1;

@@ -28,9 +28,6 @@ const App = () => {
     resetHistory,
   } = useStepHistory(state.nodes || [], state.step || 0, isDynamic);
 
-  // const isStatic = backendMode === "static";
-  // const isAtLatest = selectedStep === Math.max(0, totalSteps - 1);
-
   const messagesToRender = state.messages || [];
   const isAtLatest = selectedStep === Math.max(0, totalSteps - 1);
 
@@ -43,7 +40,7 @@ const App = () => {
   const [selectedNode, setSelectedNode] = useState(null);
 
   const goDynamic = () => {
-    // backend decides mode; we just ensure ticking
+    // backend decides mode; here just ensure ticking
     setIsRunning(true);
     send("start");
   };
@@ -78,8 +75,8 @@ const App = () => {
 
   const handleReset = () => {
     setIsRunning(false);
-    resetHistory();           // reset the static slider cache
-    send("reset");            // backend back to static movie
+    resetHistory();          
+    send("reset");            
     send("get_state");
   };
 

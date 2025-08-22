@@ -1,0 +1,5 @@
+scenario,drop_rate,seed,trial,entry_id,leader_term,start_ts_ms,commit_ts_ms,latency_ms
+leader_crash_restart,0.00,0,1,2,5,13960975,13963124,2149
+leader_crash_restart,0.00,0,1,3,5,13964457,13967136,2679
+leader_crash_restart,0.00,0,1,4,5,13967365,13971144,3779
+leader_crash_restart,0.00,0,1,5,5,13969921,13973145,3224

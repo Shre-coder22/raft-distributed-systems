@@ -1,5 +1,5 @@
 const CommittedBar = ({ committed = [] }) => {
-  // show last 8 commands as chips + a "+N" overflow pill
+  // showing last 8 commands as chips + a "+N" overflow pill
   const tail = committed.slice(-8);
   const extra = Math.max(0, committed.length - tail.length);
 

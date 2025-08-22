@@ -41,7 +41,6 @@ const useRaftSocket = () => {
         if (msg.type === "state") {
           setState(msg.payload);
         } else if (msg.type === "ack") {
-          // optional: console.log("WS ack", msg.payload);
         } else if (msg.type === "error") {
           console.error("WS server error:", msg.payload);
         }
@@ -65,7 +64,7 @@ const useRaftSocket = () => {
     };
 
     ws.onerror = () => {
-      // rely on onclose to reconnect
+      // relying on onclose to reconnect
     };
   }, []);
 

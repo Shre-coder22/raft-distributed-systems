@@ -1,6 +1,25 @@
-// raftCluster/cluster.js
 import { steps } from "./steps.js";
 import { nodePositions } from "./positions.js";
+import { initMetrics } from "../metrics.js";
+
+const METRICS = await initMetrics({
+  dir: "./metrics",
+  scenario: process.env.RAFT_SCENARIO || "leader_crash_restart",
+  seed: Number(process.env.RAFT_SEED || 0),
+  trial: Number(process.env.RAFT_TRIAL || 1),
+  timeoutLowMs: 600, timeoutHighMs: 1000,
+});
+
+let firstHBSentForTerm = new Set(); 
+const entryIdByKey = new Map();  // key -> numeric id
+let nextEntryId = 1;
+const ensureEntryIdForKey = (key) => {
+  let id = entryIdByKey.get(key);
+  if (!id) { id = nextEntryId++; entryIdByKey.set(key, id); }
+  return id;
+};
+const committedIndexEmitted = new Set();
+const currentDropRate = () => (runtime?.dropRate ?? 0.0);
 
 /* =========================
    Module state
@@ -36,8 +55,8 @@ let voteTally = {};          // { [candidateId]: number }
 const ids = () => Object.keys(runtime || {}).map(Number).sort((a, b) => a - b);
 const now = () => Date.now();
 
-const HEARTBEAT_MS = 2400;                // visualization-friendly
-const ELECTION_TIMEOUT_MIN = 5000;        // > 2x heartbeat so steady under a leader
+const HEARTBEAT_MS = 2400;                
+const ELECTION_TIMEOUT_MIN = 5000;        
 const ELECTION_TIMEOUT_JITTER = 2500;
 
 const randomElectionTimeout = () =>
@@ -98,7 +117,7 @@ const deliverDueMessages = () => {
   if (due.length === 0) return;
   inflight = inflight.filter(m => m.arriveAt > t);
   for (const m of due) {
-    try { m.onDeliver?.(m); } catch (e) { /* keep sim running */ }
+    try { m.onDeliver?.(m); } catch (e) {}
   }
 };
 
@@ -213,26 +232,32 @@ const becomeLeader = (id) => {
       r.heartbeatDueMs = Number.POSITIVE_INFINITY;
     }
   });
+
+  const term = runtime[id]?.term ?? 0;
+  try { METRICS.recordLeaderElected(id, term); } catch {}
+
+  firstHBSentForTerm.delete(term);
+
   initLeaderReplication(id);
 };
 
-// AppendEntries balls now carry entries and mutate follower on arrival
 const sendHeartbeats = (leaderId) => {
   const lr = runtime[leaderId];
   if (!lr) return;
 
   lr.heartbeatDueMs = now() + HEARTBEAT_MS;
 
+  const term = lr.term ?? 0;
+  if (!firstHBSentForTerm.has(term)) {
+    firstHBSentForTerm.add(term);
+    try { METRICS.recordFirstHeartbeat(leaderId); } catch {}
+  }
+
   ids().forEach((fid) => {
     if (fid === leaderId) return;
     if (crashedNodes.has(fid)) return;
 
     const fr = runtime[fid];
-
-    // decide exactly one entry to send this beat:
-    // 1) If follower is behind global committed prefix → send the next committed entry.
-    // 2) Else if follower behind leader’s log → send the next uncommitted entry.
-    // 3) Else → pure heartbeat (no entries).
     const nextIndex = fr.log.length;
 
     let oneEntry = null;
@@ -261,7 +286,6 @@ const sendHeartbeats = (leaderId) => {
         if (Array.isArray(payload.entries) && payload.entries.length === 1) {
           // append exactly one entry
           const e = payload.entries[0];
-          // If follower had a conflicting tail, simplify: overwrite-at-nextIndex behavior
           if (fr.log.length === nextIndex) {
             fr.log.push({ term: e.term, command: e.command });
           } else {
@@ -321,19 +345,15 @@ const applyCommitted = () => {
     if (!r) return;
     while (r.lastApplied < r.commitIndex) {
       r.lastApplied++;
-      // apply r.log[r.lastApplied] to a state machine (omitted)
     }
   });
 };
 
 const recomputeCommittedFromMajority = () => {
-  // Start from where we left off
   let idx = committedLogs.length;
 
-  // We try to extend the committed prefix as long as we can
   while (true) {
-    // tally entries present at index idx across alive nodes
-    const tally = new Map(); // key -> {entry, count}
+    const tally = new Map();
     for (const id of aliveIds()) {
       const r = runtime[id]; if (!r) continue;
       const e = r.log[idx];
@@ -344,9 +364,8 @@ const recomputeCommittedFromMajority = () => {
       else tally.set(key, { entry: e, count: 1 });
     }
 
-    if (tally.size === 0) break; // nobody has an entry here
+    if (tally.size === 0) break;
 
-    // pick the most common entry
     let best = null;
     for (const v of tally.values()) {
       if (!best || v.count > best.count) best = v;
@@ -354,10 +373,18 @@ const recomputeCommittedFromMajority = () => {
 
     if (!best || best.count < majorityAlive()) break;
 
-    // we have a majority for this index; append to global committed if new
     if (!entriesEqual(committedLogs[idx], best.entry)) {
       committedLogs[idx] = { term: best.entry.term, command: best.entry.command };
     }
+
+    if (!committedIndexEmitted.has(idx)) {
+      const key = entryKey(best.entry);
+      const eid = ensureEntryIdForKey(key);               
+      const term = best.entry.term || 0;
+      try { METRICS.recordCommit(eid, term, currentDropRate()); } catch {}
+      committedIndexEmitted.add(idx);
+    }
+
     idx += 1;
   }
 };
@@ -377,7 +404,6 @@ const eligibleForElection = (id) => {
       e.command === prevLeaderSnapshot.log[i].command
     );
 
-  // prefer highest observed term
   const maxTerm = Math.max(...ids().filter(n => !crashedNodes.has(n)).map(n => runtime[n].term || 1));
   return sameEntries && (r.term || 1) >= maxTerm;
 };
@@ -391,7 +417,6 @@ const pickCandidates = () => {
   return elig.slice(0, 2); // up to two
 };
 
-// schedule RV messages; votes are tallied on voteGiven arrival
 const scheduleRequestVotes = (candidateId) => {
   const c = runtime[candidateId];
   if (!c) return;
@@ -486,8 +511,6 @@ const runElectionStep = () => {
     voteTally = {};
     electionCandidates.forEach(cid => scheduleRequestVotes(cid));
   }
-  // subsequent steps just wait for voteGiven deliveries,
-  // majority check happens in advanceStep after deliverDueMessages()
 };
 
 /* =========================
@@ -513,8 +536,6 @@ export const advanceStep = () => {
   recomputeCommittedFromMajority();
   // After delivering RVs/ACKs, if no leader exists → enter election mode.
   if (mode === MODE_DYNAMIC && !getLeaderId()) {
-    // re-seed prevLeaderSnapshot if we just lost one (optional)
-    // prevLeaderSnapshot ||= ... (you can keep as-is)
     electionCandidates = [];
     voteTally = {};
     mode = MODE_ELECTION;
@@ -595,15 +616,15 @@ const ensureDynamic = () => {
 /* =========================
    Fault injection + client actions
    ========================= */
-export const crashNode = (nodeId) => {
+export const crashNode = async (nodeId) => {
   ensureDynamic();
 
-  // Was this node the leader BEFORE we mark it crashed?
   const wasLeader = !!runtime?.[nodeId] && runtime[nodeId].role === "leader";
 
   crashedNodes.add(nodeId);
 
   if (wasLeader) {
+    await METRICS.recordLeaderCrash(nodeId);
     // snapshot the old leader for eligibility checks
     prevLeaderSnapshot = {
       id: nodeId,
@@ -648,8 +669,10 @@ export const recoverNode = (nodeId) => {
   }
 };
 
-export const forceTimeout = (nodeId) => {
+export const forceTimeout = async (nodeId) => {
   ensureDynamic();
+
+  await METRICS.recordElectionStart();
   if (!runtime) return;
   if (crashedNodes.has(nodeId)) return;
 
@@ -688,9 +711,19 @@ export const clientCommand = (command, nodeId) => {
   const cmd = String(command || "").trim();
   if (!cmd) return;
 
-  lr.log = (lr.log || []).concat([{ term: lr.term || 1, command: cmd }]);
+  // creating entry with a stable id so commit can match it later
+  const entry = { term: lr.term || 1, command: cmd };
+  const key   = entryKey(entry);               
+  const id    = ensureEntryIdForKey(key);      
+
+  lr.log = (lr.log || []).concat([{ ...entry, id }]);
+
+  try { METRICS.recordStartCommand(id, lr.term || 1, currentDropRate()); } catch {}
+
+  // quick send to replicate
   lr.heartbeatDueMs = Math.min(lr.heartbeatDueMs || Infinity, now() + 120);
-  // recomputeCommittedFromMajority();
+
+  recomputeCommittedFromMajority();
 };
 
 export const dropLatestLog = (nodeId) => {

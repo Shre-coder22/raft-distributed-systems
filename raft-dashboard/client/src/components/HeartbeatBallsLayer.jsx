@@ -1,4 +1,3 @@
-// src/components/HeartbeatBallsLayer.jsx
 import { useMemo, useRef } from "react";
 
 /** ---------- Helpers ---------- **/
@@ -13,7 +12,7 @@ const canonType = (t) => {
   if (s.includes("reply") || s.includes("appendentriesreply"))        return "reply";
   if (s.includes("requestvote") || s === "rv")                         return "requestVote";
   if (s.includes("votegiven") || s === "grant" || s === "vote")       return "voteGiven";
-  return s; // keep original (still lets us detect "(drop)")
+  return s; 
 };
 
 const pctToPx = (container, pos) => {
@@ -52,14 +51,12 @@ const PulseBall = ({ startPx, endPx, kind, duration = 2400, delay = 0, dropMidwa
 const HeartbeatBallsLayer = ({ nodes, messages, isRunning, isAtLatest }) => {
   const containerRef = useRef(null);
 
-  // Always call hooks in the same order.
   const nodeById = useMemo(() => {
     const m = new Map();
     (nodes || []).forEach((n) => m.set(n.id, n));
     return m;
   }, [nodes]);
 
-  // Build pulses from current messages (no queuing; we slowed backend ticks)
   const pulses = useMemo(() => {
     if (!isRunning || !isAtLatest || !nodes?.length) return [];
 
@@ -85,7 +82,6 @@ const HeartbeatBallsLayer = ({ nodes, messages, isRunning, isAtLatest }) => {
             delay: 0,
             dropMidway: dropped,
           });
-          // NOTE: Do NOT auto-create an ACK; your steps/dynamic code should emit 'reply'
           break;
 
         case "reply": // follower -> leader ack for AE
@@ -133,7 +129,6 @@ const HeartbeatBallsLayer = ({ nodes, messages, isRunning, isAtLatest }) => {
     return out;
   }, [isRunning, isAtLatest, nodes, messages, nodeById]);
 
-  // Always render container; render zero pulses when none.
   return (
     <div ref={containerRef} className="pointer-events-none absolute inset-0">
       {containerRef.current &&

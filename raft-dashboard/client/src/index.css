@@ -24,13 +24,11 @@
   box-shadow: 0 0 6px rgba(0,0,0,.15);
 }
 
-/* Move from 0% to 100% along offset-path */
 @keyframes pulse-move {
   0%   { offset-distance: 0%;   opacity: 1;   }
   100% { offset-distance: 100%; opacity: 1; }
 }
 
-/* For drops, fade out at the midpoint to suggest loss */
 .pulse-fade-mid {
   animation-name: pulse-move-drop;
 }

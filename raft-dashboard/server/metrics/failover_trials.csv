@@ -1,0 +1,5 @@
+scenario,timeout_low_ms,timeout_high_ms,seed,trial,old_leader,new_leader,crash_time_ms,election_start_ms,leader_elected_ms,first_heartbeat_ms,failover_ms
+leader_crash_restart,600,1000,0,1,-1,1,0,0,0,13422795,13422795
+leader_crash_restart,600,1000,0,1,-1,4,0,13433127,13436856,13452916,16060
+leader_crash_restart,600,1000,0,1,-1,5,0,13471583,13474999,13953077,478078
+leader_crash_restart,600,1000,0,1,-1,5,0,13986613,13993217,13995227,2010

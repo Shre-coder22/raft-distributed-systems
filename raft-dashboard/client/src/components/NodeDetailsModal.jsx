@@ -19,12 +19,11 @@ const NodeDetailsModal = ({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onClose, cmd, nodeData?.id]);
 
   useEffect(() => {
     setCmd("");
-    setLossPct(Math.round(((nodeData?.dropProb || 0) * 100) ?? 0)); // if you store per-node prob in state later
+    setLossPct(Math.round(((nodeData?.dropProb || 0) * 100) ?? 0)); 
   }, [nodeData?.id]);
 
   if (!nodeData) return null;
