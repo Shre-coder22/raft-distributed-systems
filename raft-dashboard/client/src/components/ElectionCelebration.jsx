@@ -11,7 +11,7 @@ const ElectionCelebration = ({ nodes, messages }) => {
   };
 
   return (
-    <div className="pointer-events-none absolute inset-0">
+    <div className="pointer-events-none absolute inset-0 z-40">
       <div className="absolute" style={style}>
         <div className="e-burst" />
         <div className="mt-1 text-xs font-semibold text-white bg-emerald-600/90 px-2 py-1 rounded shadow">

@@ -36,8 +36,11 @@ let crashedNodes = new Set();
 let forceTimeoutNodes = new Set();
 
 let runtime = null;        // { [id]: { role, term, votedFor, log, ... } }
-let lastMessages = [];     // used only for STATIC (steps.js) projection
+let lastMessages = [];
 let prevLeaderSnapshot = null; // { id, term, log: [...] } captured entering election
+
+/* Module Flag */
+let lastResetReason = null;
 
 /* === In-flight message transport (for dynamic/election) === */
 let inflight = []; // [{ id, type, fromId, toId, payload, sendAt, arriveAt, onDeliver }]
@@ -64,8 +67,6 @@ const randomElectionTimeout = () =>
 
 const nextElectionDeadline = () =>
   now() + randomElectionTimeout() + Math.floor(Math.random() * 300);
-
-const majority = () => Math.floor(ids().length / 2) + 1;
 
 // No partitions / drops anymore
 const reachable = () => true;
@@ -139,7 +140,7 @@ export const getFilteredState = (stepIndex = currentStep) => {
         state: r.role,
         status,
         term: r.term,
-        log: r.log,
+        log: r.log, 
         position: nodePositions[i] || { left: 50, top: 50 },
       };
     });
@@ -171,6 +172,8 @@ export const getFilteredState = (stepIndex = currentStep) => {
       toId: m.toId ?? m.to,
       type: m.type || "appendEntries",
     })),
+    committed: (raw.committed || []).filter(e => e?.command !== "init"),
+    alert: lastResetReason || null,
   };
 };
 
@@ -201,6 +204,7 @@ const initRuntimeFromStatic = () => {
   electionCandidates = [];
   voteTally = {};
   prevLeaderSnapshot = null;
+  committedLogs = (frame.committed || []).filter(e => e?.command !== "init").map(e => ({ term: e.term, command: e.command }));
 };
 
 /* =========================
@@ -255,15 +259,15 @@ const sendHeartbeats = (leaderId) => {
 
   ids().forEach((fid) => {
     if (fid === leaderId) return;
-    if (crashedNodes.has(fid)) return;
+    // if (crashedNodes.has(fid)) return;
 
     const fr = runtime[fid];
-    const nextIndex = fr.log.length;
+    const nextIndex = fr ? fr.log.length : 0;
 
     let oneEntry = null;
-    if (nextIndex < committedLogs.length) {
+    if (fr && nextIndex < committedLogs.length) {
       oneEntry = committedLogs[nextIndex];               // replicate committed first
-    } else if (nextIndex < lr.log.length) {
+    } else if (fr && nextIndex < lr.log.length) {
       oneEntry = lr.log[nextIndex];                      // then uncommitted, one by one
     }
 
@@ -325,13 +329,13 @@ const updateCommitIndex = (leaderId) => {
   if (!lr || !lr.matchIndex) return;
 
   for (let N = lr.log.length - 1; N > lr.commitIndex; N--) {
-    const replicated = 1 + ids().filter((pid) => {
+    const replicatedAlive = 1 + aliveIds().filter((pid) => {
       if (pid === leaderId) return false;
       const mi = lr.matchIndex?.[pid] ?? -1;
       return mi >= N;
     }).length;
 
-    if (replicated >= majority() && lr.log[N]?.term === lr.term) {
+    if (replicatedAlive >= majorityAlive() && lr.log[N]?.term === lr.term) {
       lr.commitIndex = N;
       break;
     }
@@ -527,6 +531,7 @@ export const advanceStep = () => {
       currentStep++;
     } else {
       isRunning = false; // end of movie
+      lastResetReason = "Static demo finished. Press Reset to replay, or inject a fault to enter live mode.";
     }
     return getFilteredState(currentStep);
   }
@@ -536,6 +541,15 @@ export const advanceStep = () => {
   recomputeCommittedFromMajority();
   // After delivering RVs/ACKs, if no leader exists → enter election mode.
   if (mode === MODE_DYNAMIC && !getLeaderId()) {
+    const alive = aliveIds().length;
+    if (alive < 3) {
+      lastResetReason = "Cluster has fewer than 3 alive nodes. Auto-resetting.";
+      resetToInitialState();
+      const s = getFilteredState(currentStep);
+      s.alert = lastResetReason;
+      return s;
+    }
+
     electionCandidates = [];
     voteTally = {};
     mode = MODE_ELECTION;
@@ -546,7 +560,7 @@ export const advanceStep = () => {
     runElectionStep();
 
     // check majority after deliveries
-    const winnerEntry = Object.entries(voteTally).find(([, count]) => count >= majority());
+    const winnerEntry = Object.entries(voteTally).find(([, count]) => count >= majorityAlive());
     if (winnerEntry) {
       const winner = Number(winnerEntry[0]);
       becomeLeader(winner);
@@ -601,6 +615,7 @@ export const resetToInitialState = () => {
   electionCandidates = [];
   voteTally = {};
   committedLogs = [];
+  lastResetReason = null;
 };
 
 export const startSimulation = () => { isRunning = true; };
@@ -620,6 +635,10 @@ export const crashNode = async (nodeId) => {
   ensureDynamic();
 
   const wasLeader = !!runtime?.[nodeId] && runtime[nodeId].role === "leader";
+  if (wasLeader) {
+    runtime[nodeId].role = "follower";
+    runtime[nodeId].heartbeatDueMs = Number.POSITIVE_INFINITY;
+  }
 
   crashedNodes.add(nodeId);
 

@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import useRaftSocket from "./hooks/useRaftSocket";
 import useStepHistory from "./hooks/useStepHistory";
 import StepSlider from "./components/StepSlider";
@@ -38,6 +38,18 @@ const App = () => {
   }, [backendMode, getNodesForStep, selectedStep, state.nodes]);
 
   const [selectedNode, setSelectedNode] = useState(null);
+  useEffect(() => {
+    if (!selectedNode) return;
+    const updated = (state.nodes || []).find(n => n.id === selectedNode.id);
+    if (updated) setSelectedNode(updated);
+  }, [state.nodes, selectedNode?.id]);
+
+  useEffect(() => {
+    if (state.alert) {
+      alert(state.alert);
+      send("reset");
+    }
+  }, [state.alert]);
 
   const goDynamic = () => {
     // backend decides mode; here just ensure ticking

@@ -1,3 +1,5 @@
 scenario,seed,trial,leader_id,term,start_ts_ms,end_ts_ms,tenure_ms
 leader_crash_restart,0,1,4,4,13436856,13474999,38143
 leader_crash_restart,0,1,5,6,13474999,13993217,518218
+leader_crash_restart,0,1,5,4,108869,122942,14073
+leader_crash_restart,0,1,4,5,122942,143023,20081
