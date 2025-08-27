@@ -6,10 +6,10 @@ const NodeDetailsModal = ({
   onCrash,
   onRecover,
   onForceTimeout,
-  onSetDropProbability,
   send,
+  dropRate,
 }) => {
-  const [lossPct, setLossPct] = useState(0);
+  const [lossPct, setLossPct] = useState("30");
   const [cmd, setCmd] = useState("");
 
   useEffect(() => {
@@ -43,11 +43,6 @@ const NodeDetailsModal = ({
     crashed: "bg-red-500",
     partitioned: "bg-yellow-500",
   }[statusKey];
-
-  const applyDropProb = () => {
-    const prob01 = Math.max(0, Math.min(1, lossPct / 100));
-    onSetDropProbability?.(nodeData.id, prob01);
-  };
 
   const submitCommand = () => {
     const value = cmd.trim();
@@ -150,22 +145,17 @@ const NodeDetailsModal = ({
           </button>
         </div>
 
-        {/* Per-node message loss slider */}
-        <div className="mt-4">
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Message Loss % (from Node {nodeData.id})
-          </label>
-          <input
-            type="range"
-            min={0}
-            max={100}
-            value={lossPct}
-            onChange={(e) => setLossPct(Number(e.target.value))}
-            onMouseUp={applyDropProb}
-            onTouchEnd={applyDropProb}
-            className="w-full"
-          />
-          <div className="text-sm text-gray-600 mt-1">{lossPct}%</div>
+        <div className="mt-3">
+          <div className="text-xs font-semibold mb-1">Message loss</div>
+          <div className="w-full h-2 bg-gray-200 rounded">
+            <div
+              className="h-2 bg-rose-500 rounded"
+              style={{ width: `${Math.min(100, Math.max(0, nodeData.lossPct || 0))}%` }}
+            />
+          </div>
+          <p className="text-xs opacity-80">
+            Message Loss % (term-wide): {Math.round((dropRate ?? 0) * 100)}%
+          </p>
         </div>
       </div>
     </div>

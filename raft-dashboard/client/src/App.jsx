@@ -147,8 +147,9 @@ const App = () => {
           onCrash={crashNode}
           onRecover={recoverNode}
           onForceTimeout={forceTimeout}
-          isDynamic={isDynamic}
+          // isDynamic={isDynamic}
           send={send}
+          dropRate={state.dropRate}
         />
       )}
     </div>

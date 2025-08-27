@@ -19,13 +19,14 @@ const ensureEntryIdForKey = (key) => {
   return id;
 };
 const committedIndexEmitted = new Set();
-const currentDropRate = () => (runtime?.dropRate ?? 0.0);
 
 /* =========================
    Module state
    ========================= */
 let currentStep = 0;
 let isRunning = false;
+let globalDropRate = 0.0;
+let currentTerm = 0;
 
 const MODE_STATIC = "static";
 const MODE_DYNAMIC = "dynamic";
@@ -38,6 +39,7 @@ let forceTimeoutNodes = new Set();
 let runtime = null;        // { [id]: { role, term, votedFor, log, ... } }
 let lastMessages = [];
 let prevLeaderSnapshot = null; // { id, term, log: [...] } captured entering election
+const shouldDrop = () => Math.random() < globalDropRate;
 
 /* Module Flag */
 let lastResetReason = null;
@@ -57,6 +59,14 @@ let voteTally = {};          // { [candidateId]: number }
    ========================= */
 const ids = () => Object.keys(runtime || {}).map(Number).sort((a, b) => a - b);
 const now = () => Date.now();
+
+const updateDropRateForTerm = (newTerm) => {
+  if (newTerm !== currentTerm) {
+    currentTerm = newTerm;
+    globalDropRate = Math.random() * 0.2;
+    console.log(`[DropRate] New term=${newTerm}, dropRate=${(globalDropRate*100).toFixed(1)}%`);
+  }
+};
 
 const HEARTBEAT_MS = 2400;                
 const ELECTION_TIMEOUT_MIN = 5000;        
@@ -95,18 +105,30 @@ const hasCommittedPrefix = (r) => {
 /* =========================
    In-flight queue helpers
    ========================= */
-const scheduleBall = ({ type, fromId, toId, payload = {}, travelMs = BALL_TRAVEL_MS, onDeliver }) => {
+// schedule a pulse; if it’s “dropped”, we still render the ball but do no state mutation on deliver
+const scheduleBall = ({
+  type,
+  fromId,
+  toId,
+  payload = {},
+  travelMs = BALL_TRAVEL_MS,
+  onDeliver,
+}) => {
   const t = now();
+  const dropped = shouldDrop();   
+
   const msg = {
     id: _msgId++,
-    type,
+    type,                 // keep base type (appendEntries, appendEntriesReply, requestVote, voteGiven, elected, etc.)
     fromId,
     toId,
     payload,
     sendAt: t,
     arriveAt: t + travelMs,
-    onDeliver: typeof onDeliver === "function" ? onDeliver : () => {},
+    dropped,             
+    onDeliver: dropped ? null : (typeof onDeliver === "function" ? onDeliver : () => {}),
   };
+
   inflight.push(msg);
   return msg;
 };
@@ -140,18 +162,19 @@ export const getFilteredState = (stepIndex = currentStep) => {
         state: r.role,
         status,
         term: r.term,
-        log: r.log, 
+        log: r.log || [], 
         position: nodePositions[i] || { left: 50, top: 50 },
+        lossPct: r.lossPct ?? 0, 
       };
     });
 
     const msgs = inflight.map(m => ({
       fromId: m.fromId,
       toId: m.toId,
-      type: m.type,
+      type: m.dropped ? `${m.type}(drop)` : m.type, 
     }));
 
-    return { step: stepIndex, mode, nodes: nodesArr, messages: msgs, committed: committedLogs.slice() };
+    return { step: stepIndex, mode, nodes: nodesArr, messages: msgs, committed: committedLogs.slice(), dropRate: globalDropRate };
   }
 
   // Static movie projection
@@ -195,10 +218,16 @@ const initRuntimeFromStatic = () => {
       matchIndex: {},
       heartbeatDueMs: Number.POSITIVE_INFINITY,
       electionDeadlineMs: nextElectionDeadline(),
+      lossPct: 0,       
+      _lossTerm: null,  
     };
   });
+
   const lid = ids().find((id) => runtime[id]?.role === "leader");
-  if (lid) runtime[lid].heartbeatDueMs = now() + Math.min(400, HEARTBEAT_MS);
+  if (lid) {
+    runtime[lid].heartbeatDueMs = now() + Math.min(400, HEARTBEAT_MS);
+    updateDropRateForTerm(runtime[lid].term || 1);
+  }  
   lastMessages = [];
   inflight = [];
   electionCandidates = [];
@@ -238,6 +267,7 @@ const becomeLeader = (id) => {
   });
 
   const term = runtime[id]?.term ?? 0;
+  updateDropRateForTerm(term);
   try { METRICS.recordLeaderElected(id, term); } catch {}
 
   firstHBSentForTerm.delete(term);
@@ -385,7 +415,7 @@ const recomputeCommittedFromMajority = () => {
       const key = entryKey(best.entry);
       const eid = ensureEntryIdForKey(key);               
       const term = best.entry.term || 0;
-      try { METRICS.recordCommit(eid, term, currentDropRate()); } catch {}
+      try { METRICS.recordCommit(eid, term, globalDropRate); } catch {}
       committedIndexEmitted.add(idx);
     }
 
@@ -428,6 +458,7 @@ const scheduleRequestVotes = (candidateId) => {
   // promote this tick
   c.role = "candidate";
   c.term = (c.term || 0) + 1;
+  updateDropRateForTerm(c.term);
   c.votedFor = candidateId;
 
   const cLastIdx  = c.log.length - 1;
@@ -489,6 +520,13 @@ const scheduleRequestVotes = (candidateId) => {
             payload: { granted: true },
             onDeliver: ({ toId }) => {
               voteTally[toId] = (voteTally[toId] || 0) + 1;
+              if (voteTally[toId] >= majorityAlive()) {
+                becomeLeader(toId);
+                scheduleBall({ type: "elected", fromId: toId, toId, travelMs: 200 });
+                mode = MODE_DYNAMIC;           // return to steady state
+                electionCandidates = [];
+                voteTally = {};
+              }
             }
           });
         }
@@ -550,8 +588,8 @@ export const advanceStep = () => {
       return s;
     }
 
-    electionCandidates = [];
-    voteTally = {};
+    // electionCandidates = [];
+    // voteTally = {};
     mode = MODE_ELECTION;
   }
 
@@ -684,7 +722,10 @@ export const recoverNode = (nodeId) => {
   const leaderId = getLeaderId();
   if (leaderId) {
     const lr = runtime[leaderId];
-    r.term = Math.max(r.term || 0, lr.term || 0);
+    const newTerm = Math.max(r.term || 0, lr.term || 0);
+    if (newTerm !== r.term) {
+      r.term = newTerm;
+    }
   }
 };
 
@@ -705,6 +746,7 @@ export const forceTimeout = async (nodeId) => {
   const currentLeader = getLeaderId();
   const leaderTerm = currentLeader ? (runtime[currentLeader].term || 0) : (r.term || 0);
   r.term = Math.max(r.term || 0, leaderTerm);
+  updateDropRateForTerm(r.term);   
 
   r.role = "candidate";
   r.votedFor = nodeId;
@@ -737,7 +779,7 @@ export const clientCommand = (command, nodeId) => {
 
   lr.log = (lr.log || []).concat([{ ...entry, id }]);
 
-  try { METRICS.recordStartCommand(id, lr.term || 1, currentDropRate()); } catch {}
+  try { METRICS.recordStartCommand(id, lr.term || 1, globalDropRate); } catch {}
 
   // quick send to replicate
   lr.heartbeatDueMs = Math.min(lr.heartbeatDueMs || Infinity, now() + 120);
