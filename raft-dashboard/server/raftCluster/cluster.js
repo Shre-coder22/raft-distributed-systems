@@ -63,7 +63,7 @@ const now = () => Date.now();
 const updateDropRateForTerm = (newTerm) => {
   if (newTerm !== currentTerm) {
     currentTerm = newTerm;
-    globalDropRate = Math.random() * 0.2;
+    globalDropRate = 0.1 + Math.random() * 0.1;
     console.log(`[DropRate] New term=${newTerm}, dropRate=${(globalDropRate*100).toFixed(1)}%`);
   }
 };

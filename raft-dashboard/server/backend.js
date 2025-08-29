@@ -118,12 +118,16 @@ wss.on("connection", (ws) => {
           broadcast("state", raftCluster.getFilteredState());
           break;
 
-        case "client_command":
-          raftCluster.goDynamic?.(); // ensure dynamic mode
-          raftCluster.clientCommand(payload.command, payload.nodeId);
-          broadcast("state", raftCluster.getFilteredState());
+        case "client_command": {
+          try {
+            raftCluster.clientCommand(payload.command, payload.nodeId); // ensureDynamic() runs inside
+            raftCluster.startSimulation(); // start ticking so hb/appEnt fire
+            broadcast("state", raftCluster.getFilteredState());
+          } catch (err) {
+            ws.send(JSON.stringify({ type: "error", payload: { message: String(err) } }));
+          }
           break;
-        
+        }
         case "force_timeout":
           raftCluster.forceTimeout(payload.nodeId);
           ws.send(JSON.stringify({ type: "ack", payload: { ok: true } }));
