@@ -1,98 +1,66 @@
-# Raft Distributed Systems Lab:
+# Raft Distributed Systems Lab + Dashboard
 
+This repo contains an **instrumented Raft implementation** (Go, based on MIT 6.824 labs 2A–2C) paired with a **fault-injectable dashboard** (React/Node).  
+It supports reproducible experiments on **leader failover**, **replication latency**, and **leader tenure** with paper-ready plots.
 
-# 🚀 Raft: Distributed Consensus Algorithm (MIT 6.824 Labs):
+## Components
+- `raft/`: Go Raft implementation (leader election, log replication, commit).
+- `raft-dashboard/`: Dashboard with server (Node) and client (React/Tailwind).
+  - `server/raft_experiments/analyze_raft_results.py`: Python analysis script.
+  - `server/raft_experiments/metrics/`: Example CSVs + figures.
+- `artifact/`: supplementary material
+  - `notes/`: exported day-by-day engineering logs (Obsidian → Markdown).
+  - `configs/`: configuration scripts.
+  - `supplementary/`: extra figures.
 
-This project implements the **Raft consensus algorithm** as part of the MIT 6.824 Distributed Systems course.  
-Raft is a fault-tolerant protocol used to manage a replicated log across multiple nodes with clear state transitions and strong leadership guarantees.
+## Environment
+- Windows 11
+- Go 1.19+
+- Node 20.10.0, npm 10.2.3
+- Python 3.10.3
+- pandas, numpy, matplotlib
 
----
+## Setup
+```bash
+# 1. Create Python venv
+py -m venv venv
+./venv/Scripts/Activate.ps1
+pip install -U pip pandas numpy matplotlib
 
-## ✅ Lab Progress:
+# 2. Run dashboard
+# Terminal 1 (server)
+cd raft-dashboard/server
+npm run dev
 
-| Lab | Description             | Status |
-|-----|-------------------------|--------|
-| 2A  | Leader Election         | ✅ Done |
-| 2B  | Log Replication         | ⏳ Pending |
-| 2C  | Persistence             | ⏳ Pending |
+# Terminal 2 (client)
+cd raft-dashboard/client
+npm run dev
+```
 
----
+## Analysis
+After running experiments, analyze metrics:
+```bash
+cd raft-dashboard/server
+py raft_experiments/analyze_raft_results.py --input ./metrics --out ./metrics/figures
+```
+### Generates:
+failover_cdf.png
+leader_tenure_box.png
+replication_latency_vs_drop.png
 
-## 📄 Features Implemented (Lab 2A):
+## Artifact & Reproducibility
+Example data/figures: server/raft_experiments/metrics/
+Notes: artifact/notes/
+Reproduce plots: run the analyzer with --input ./metrics --out ./metrics/figures.
 
-- Raft roles: **Follower**, **Candidate**, **Leader**
-- **Randomized election timeouts** to reduce collisions
-- **RequestVote RPC** for safe elections
-- **Term updates** and **vote handling**
-- **Heartbeat detection** via AppendEntries
-- Logging for **timeouts**, **state changes**, and **election results**
+## Citation
+If you use this artifact, please cite:
 
----
-
-## 🧪 2A Test Behavior Summary:
-
-### 🔹 TestInitialElection2A
-- Nodes start as followers
-- One node times out and starts election
-- Other nodes grant votes
-- A stable leader is elected in **Term 1**
-
-### 🔹 TestReElection2A
-
-| Term | Events |
-|------|--------|
-| 1 | Node 1 times out, gets votes → Becomes Leader |
-| 2 | Node 0 times out after heartbeat loss → Becomes Leader |
-| 3–7 | Repeated **split votes** between Node 1 and 2 (timeouts too close) |
-| 8 | Node 1 starts election, Node 2 grants vote before it can timeout → **Node 1 becomes Leader** |
-
-- **Split votes** occurred due to closely timed timeouts (within 5–10ms), preventing nodes from gathering majority votes.
-- **Final win** happens when a follower receives a **RequestVote** before it starts its own election.
-
----
-
-## ⏱ Timeout Tuning (Experiment):
-
-- Configured election timeout: **150ms–300ms**
-- Result:
-  - Early leader elected in `TestInitialElection2A`
-  - Multiple re-elections and split votes in `TestReElection2A`
-- Insight:
-  - If election timers are too close (e.g., within 5–10ms), **collisions** and **vote splitting** are common
-  - More spread-out timers = more stable elections
-
----
-
-## 📁 Project Structure:
-
-| File         | Purpose                                |
-|--------------|----------------------------------------|
-| `raft.go`    | Core Raft logic: roles, elections, RPCs |
-| `config.go`  | Cluster simulation for testing         |
-| `persist.go` | Persistent state (for Lab 2C)          |
-| `test_test.go` | Raft test harness                    |
-
----
-
-## 🔧 Run Tests:
-
--cd mitraft/raft
--go1.19 test -run 2A
-
----
-
-## 📚 Resources:
-
-- Raft Paper
-- MIT 6.824 Website
-- [Lecture 1 Watched] ✅ Introduction to Raft & Course Overview
-
----
-
-## 🧠 Next Up:
-
-- Implement log replication (2B)
-- Add AppendEntries RPC and matchIndex/nextIndex handling
-- Continue with visualizations and benchmark extensions
-
----
+@misc{raft_dashboard_2025,
+  author = {Shrestha Saxena},
+  title = {Instrumented Raft + Dashboard: Measuring Failover, Latency, and Tenure},
+  year = {2025},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  howpublished = url : {https://github.com/Shre-coder22/raft-distributed-systems-lab}
+}
