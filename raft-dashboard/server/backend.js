@@ -99,13 +99,15 @@ wss.on("connection", (ws) => {
           break;
 
         case "start":
+          raftCluster.setPaused?.(false);
           raftCluster.startSimulation();
           broadcast("state", raftCluster.getFilteredState());
           break;
 
         case "pause":
           raftCluster.pauseSimulation();
-          broadcast("state", raftCluster.getFilteredState());  
+          raftCluster.setPaused?.(true);
+          broadcast("state", raftCluster.getFilteredState());
           break;
 
         case "crash_node":
