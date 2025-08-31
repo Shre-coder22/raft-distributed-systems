@@ -71,7 +71,17 @@ const App = () => {
     goDynamic();
   };
 
-  const handleNodeClick = (node) => setSelectedNode(node);
+  const handleNodeClick = (node) => {
+    setSelectedNode(node);
+    setIsRunning(false);
+    send("pause");
+  }; 
+
+  const closeModal = () => {
+    setSelectedNode(null);
+    setIsRunning(true);
+    send("start");
+  };
 
   // Controls
   const handlePlay = () => {
@@ -124,8 +134,7 @@ const App = () => {
         <HeartbeatBallsLayer
           nodes={getNodesForStep(selectedStep)}
           messages={messagesToRender}
-          isRunning={isRunning}
-          isAtLatest={backendMode !== "static" ? true : isAtLatest}
+          paused={!isRunning}
         />
 
         <ElectionCelebration
@@ -143,11 +152,10 @@ const App = () => {
       {selectedNode && (
         <NodeDetailsModal
           nodeData={selectedNode}
-          onClose={() => setSelectedNode(null)}
+          onClose={closeModal}
           onCrash={crashNode}
           onRecover={recoverNode}
           onForceTimeout={forceTimeout}
-          // isDynamic={isDynamic}
           send={send}
           dropRate={state.dropRate}
         />

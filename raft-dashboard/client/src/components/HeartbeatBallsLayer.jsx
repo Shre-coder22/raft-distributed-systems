@@ -8,10 +8,10 @@ const resolveIds = (m) => ({
 
 const canonType = (t) => {
   const s = String(t || "").toLowerCase();
-  if (s.includes("append") || s === "hb" || s.includes("heartbeat")) return "appendEntries";
-  if (s.includes("reply") || s.includes("appendentriesreply"))        return "reply";
-  if (s.includes("requestvote") || s === "rv")                         return "requestVote";
-  if (s.includes("votegiven") || s === "grant" || s === "vote")       return "voteGiven";
+  if (s.includes("append") || s === "hb" || s.includes("heartbeat"))                       return "appendEntries";
+  if (s.includes("reply") || s.includes("appendentriesreply") || s.includes("ack"))        return "reply";
+  if (s.includes("requestvote") || s === "rv")                                             return "requestVote";
+  if (s.includes("votegiven") || s === "grant" || s === "vote")                            return "voteGiven";
   return s; 
 };
 
@@ -48,7 +48,7 @@ const PulseBall = ({ startPx, endPx, kind, duration = 2400, delay = 0, dropMidwa
 };
 
 /** ---------- Main Layer ---------- **/
-const HeartbeatBallsLayer = ({ nodes, messages, isRunning, isAtLatest }) => {
+const HeartbeatBallsLayer = ({ nodes, messages, paused }) => {
   const containerRef = useRef(null);
 
   const nodeById = useMemo(() => {
@@ -58,7 +58,7 @@ const HeartbeatBallsLayer = ({ nodes, messages, isRunning, isAtLatest }) => {
   }, [nodes]);
 
   const pulses = useMemo(() => {
-    if (!isRunning || !isAtLatest || !nodes?.length) return [];
+    if (!nodes?.length) return [];
 
     const out = [];
     (messages || []).forEach((raw, idx) => {
@@ -78,7 +78,7 @@ const HeartbeatBallsLayer = ({ nodes, messages, isRunning, isAtLatest }) => {
             kind: dropped ? "drop" : "hb",
             fromId,
             toId,
-            duration: 1800, // ~2.4s for visualization
+            duration: 1200, 
             delay: 0,
             dropMidway: dropped,
           });
@@ -90,8 +90,8 @@ const HeartbeatBallsLayer = ({ nodes, messages, isRunning, isAtLatest }) => {
             kind: dropped ? "drop" : "ack",
             fromId,
             toId,
-            duration: 1800, // slightly faster return
-            delay: 150,     // small lag after HB delivery
+            duration: 900, 
+            delay: 150,     
             dropMidway: dropped,
           });
           break;
@@ -102,7 +102,7 @@ const HeartbeatBallsLayer = ({ nodes, messages, isRunning, isAtLatest }) => {
             kind: dropped ? "drop" : "rv",
             fromId,
             toId,
-            duration: 1800,
+            duration: 1200,
             delay: 0,
             dropMidway: dropped,
           });
@@ -114,7 +114,7 @@ const HeartbeatBallsLayer = ({ nodes, messages, isRunning, isAtLatest }) => {
             kind: dropped ? "drop" : "vote",
             fromId,
             toId,
-            duration: 1500,
+            duration: 900,
             delay: 150,
             dropMidway: dropped,
           });
@@ -127,10 +127,10 @@ const HeartbeatBallsLayer = ({ nodes, messages, isRunning, isAtLatest }) => {
     });
 
     return out;
-  }, [isRunning, isAtLatest, nodes, messages, nodeById]);
+  }, [nodes, messages, nodeById]);
 
   return (
-    <div ref={containerRef} className="pointer-events-none absolute inset-0">
+    <div ref={containerRef} className={`pointer-events-none absolute inset-0 ${paused ? "hb-paused" : ""}`}>
       {containerRef.current &&
         pulses.map((p) => {
           const from = nodeById.get(p.fromId);

@@ -32,6 +32,7 @@
 .pulse-fade-mid {
   animation-name: pulse-move-drop;
 }
+
 @keyframes pulse-move-drop {
   0%   { offset-distance: 0%;   opacity: 1; }
   50%  { offset-distance: 50%;  opacity: 0.1; }
@@ -43,6 +44,7 @@
   70%  { transform: scale(1.4); opacity: .5; box-shadow: 0 0 0 16px rgba(16,185,129,0); }
   100% { transform: scale(1.0); opacity: 0;  box-shadow: 0 0 0 0 rgba(16,185,129,0); }
 }
+
 .e-burst {
   width: 80px;
   height: 80px;
@@ -50,3 +52,5 @@
   background: rgba(16,185,129,.25);
   animation: burst 900ms ease-out 1;
 }
+
+.hb-paused .pulse-dot { animation-play-state: paused !important; }
