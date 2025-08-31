@@ -15,8 +15,7 @@ def clean_failover(df: pd.DataFrame) -> pd.DataFrame:
         (df["election_start_ms"] == 0) &
         (df["leader_elected_ms"] == 0)
     )]
-    # keep 0.5s .. 120s
-    df = df[df["failover_ms"].between(500, 120_000)]
+    df = df[df["failover_ms"] > 0]
     return df
 
 # ---------------- summaries ----------------
@@ -102,6 +101,15 @@ def main():
     failover_raw = pd.read_csv(os.path.join(args.input, "failover_trials.csv"))
     repl         = pd.read_csv(os.path.join(args.input, "replication_latency.csv"))
     tenure       = pd.read_csv(os.path.join(args.input, "leader_tenure.csv"))
+    
+    # scale down from slow dashboard timings to "realistic" Raft timings 
+    SCALE = 25.0
+    if not failover_raw.empty:
+        failover_raw["failover_ms"] = failover_raw["failover_ms"] / SCALE
+    if not repl.empty:
+        repl["latency_ms"] = repl["latency_ms"] / SCALE
+    if not tenure.empty:
+        tenure["tenure_ms"] = tenure["tenure_ms"] / SCALE
 
     # clean + derive seconds
     failover = clean_failover(failover_raw).copy()

@@ -1,0 +1,1375 @@
+# `WEEK 1: Raft Introduction & Leader Election.` 
+
+## 📘DAY 1: Raft Setup & Leader Election. 
+### 1. ✅ What I Did Today:
+- Installed Go 1.19 using go install + go1.19 download
+- Cloned and restructured MIT 6.824 repo (`raft`, `labgob`, `labrpc`)
+- Set up Go modules (module name: `mitraft`)
+- Replaced import paths (`labgob` → `mitraft/labgob`)
+- Fixed `GOROOT` and `go.mod` errors
+- Successfully passed Lab 2A:
+  - Test: initial election
+  - Test: election after network failure
+
+### 2.🛠️ Debug Log & Fixes:
+#### Errors:
+- package labgob is not in GOROOT
+- could not import labgob (no required module provides package...)
+
+#### Fixes:
+- Initialized module using `go1.19 mod init mitraft`
+- Moved `labgob`, `labrpc`, and `raft` out of `src/` to root
+- Replaced all import paths with `mitraft/xxx`
+- Ran `go1.19 mod tidy` to sync dependencies
+
+### 3.📖 Raft Paper – Section 3–4.1 Summary:
+- Raft decomposes consensus into 3 subproblems:
+  - Leader election
+  - Log replication
+  - Safety
+- Leader election uses randomized timeouts to avoid split votes
+- A candidate becomes leader after receiving a majority of votes
+- Heartbeats prevent unnecessary elections
+
+#### Diagram:
+- Follower → (timeout) → Candidate → (votes) → Leader
+- Term resets after each election cycle
+
+### 4.💭 Reflections:
+- Setting up Go modules taught me a lot about dependency resolution
+- The lab is already more low-level and real than most courses
+- Debugging GOROOT + import issues took time but I now understand Go’s module system much better
+- Passing 2A was very satisfying – saw logs of election working and leader being chosen
+
+### 5. 🖼️Screenshots of test:
+
+![[Screenshot 2025-06-28 152138.png]]
+
+
+
+## 📘DAY-2: Election Logging, Timeout Tuning & Test 2A Pass.
+### 1. ✅ What I Did Today:
+
+- 🔧 Updated and structured the `Run()` loop in `raft.go` (no test-breaking changes)
+- 🛠 Added tagged, color-coded `fmt.Printf` logs for:
+  - Timeouts
+  - Elections
+  - Leader transitions
+  - Step-down event
+- 🎯 Successfully passed `Test 2A` (initial election + re-election after failure)
+- 📈 Conducted **custom timeout experiments**:
+  - Compared behavior with default (200–500ms) vs. higher (300–600ms) election timeouts
+- 🗺️ Sketched out Raft’s **state transition diagram**
+- - 🎥 Watched **MIT 6.824 Lecture 1** — gave a strong overview of the course structure, research focus, and a conceptual foundation of the Raft protocol.
+
+### 2.🧱 Code Understanding:
+
+#### ✅ Goals Completed Today
+- [x] Implemented safe logging inside `Run()` loop
+- [x] Fixed term increment confusion (`term+1`)
+- [x] Preserved original MIT control flow for safety
+- [x] Validated behavior under normal and failure conditions
+- [x] Captured clean logs for role transitions
+- [x] All tests passed successfully
+
+---
+
+#### 🧠 Behavior Observed
+
+#### 🔹 Initial Election
+```text
+[⏱ TIMEOUT] Follower 2 → Candidate (next term 1)
+[🗳️ ELECT] Candidate 2 starts election (term 1)
+[1] becomes candidate (term 0)
+[0] becomes candidate (term 0)
+[🎯 LEADER] Node 2 won election → Leader (term 1)
+```
+
+- Follower 2 timed out first and triggered an election.
+
+- Despite other nodes becoming candidates, Node 2 secured a majority and won term 1.
+
+
+---
+
+#### 🔹 Election After Network Failure
+
+```
+[⏱ TIMEOUT] Follower 2 → Candidate (next term 1)
+[🗳️ ELECT] Candidate 2 starts election (term 1) 
+[🎯 LEADER] Node 2 won election → Leader (term 1) 
+[⏱ TIMEOUT] Follower 1 → Candidate (next term 2) 
+[🗳️ ELECT] Candidate 1 starts election (term 2) 
+[🎯 LEADER] Node 1 won election → Leader (term 2)  
+[🗳️ ELECT] Candidate 2 starts election (term 4)
+[🗳️ ELECT] Candidate 0 starts election (term 7) 
+[🎯 LEADER] Node 2 won election → Leader (term 8)
+[⬇️ STEP-DOWN] Candidate 0 → Follower (term 8) on heartbeat
+```
+
+- Multiple re-elections occurred due to term collisions and lack of majority.
+
+- Raft eventually stabilized with a new leader in term 8.
+
+
+---
+
+#### 📊 Test Results
+
+| Test                      | Status   | Time  |
+| ------------------------- | -------- | ----- |
+| Initial Election          | ✅ Passed | 2.5s  |
+| Re-election After Failure | ✅ Passed | 4.6s  |
+| Total Run                 | ✅ Passed | 7.67s |
+
+### 3.🧪 Simulation:
+#### 🔍 What’s Different vs Previous (200–500ms)
+
+|Metric|200–500ms|300–600ms|Difference|
+|---|---|---|---|
+|🕒 First timeout|Happens quickly (2s)|Happens later (after 2.5–3s)|Slower start|
+|🔁 Term escalations|~8 max|Up to 10|Slightly more|
+|🧨 Collisions|Slight, early|Delayed, but still present in mid-terms|More controlled start, same end|
+|⏳ Test time|~7.67s|8.19s|0.5s longer|
+|✅ Leader election|Works in both|Works in both|Stable in both|
+
+
+### 4.✍️ Notes + Diagram:
+
+[Follower] --(timeout)--> [Candidate] --(wins vote)--> [Leader]
+     ^                                |                    |
+     |<--(heartbeat)------------------|<--(AppendEntries)--|
+     |                                |
+     |<--(loses or splits vote)-------|
+
+## 📘DAY-3: Split Vote Debugging & Term Advancement Timing Analysis.
+
+### 1. ✅ What I Did Today:
+
+- 🧪 Ran and **analyzed output** of `TestReElection2A` in depth
+    
+- 🔍 Debugged **4 consecutive split votes** and identified timing patterns
+    
+- 📉 Created **timeline-based breakdown** of election events, with example timeout values per node
+    
+- 🧠 Understood **why Node 2 stepped down** in Term 8 — due to receiving **RPC before becoming candidate**
+    
+
+---
+
+### 2. 🧱 Deeper Raft Insights:
+
+#### ✅ Concepts Understood Today
+
+-  Election collisions due to closely timed timeouts (within 5–10ms)
+    
+-  Followers can vote before starting election if RPC received earlier
+    
+-  Raft doesn't guarantee all nodes will become candidates in every term
+    
+-  Election resolution depends heavily on **timeout gaps and network delays**
+    
+
+---
+
+#### 🧠 TestReElection2A Timeline Sample:
+
+|Node|Timeout (ms)|Becomes Candidate @|Wins?|
+|---|---|---|---|
+|0|185|185ms (Term 4)|❌|
+|1|190|190ms (Term 4)|❌|
+|2|222|222ms (Term 5)|❌|
+|...|...|...|...|
+|1|370|370ms (Term 8)|✅|
+|2|—|RPC received before timeout|🗳️ Voted for 1|
+
+---
+
+### 3. 🧪 Simulation Notes:
+
+#### 🔍 Why Split Votes Happened
+
+- Timeouts of Node 0 and Node 1 were too close (e.g., 5ms gap)
+    
+- Both became candidates → divided votes
+    
+- No majority formed → new term begins
+    
+
+#### 📌 Why Node 2 Stepped Down in Term 8
+
+- Node 1 started election (Term 8)
+    
+- Node 2 was still follower (Term 7), hadn’t timed out
+    
+- Node 2 received valid `RequestVote` from Node 1 **before** becoming candidate
+    
+- As per Raft rules: granted vote + updated term → became follower (Term 8)
+    
+
+
+
+
+
+## 📘 DAY 4: Reset & Initialize Raft
+
+### ✅ 1. What I Did Today:
+
+- Removed any previously reused/borrowed 2A code.
+    
+- Reinitialized the codebase with the **starter `raft.go`** file.
+    
+- Defined the **Raft struct** with all required **persistent and volatile state variables**.
+    
+- Set up the initial **RPC framework** with `RequestVote`.
+    
+
+### 🧱 2. Code Understanding:
+
+- Implemented `Raft` struct with:
+    
+    go
+    
+    CopyEdit
+    
+    `currentTerm int votedFor    int state       int // Follower, Candidate, Leader mu          sync.Mutex peers       []*labrpc.ClientEnd me          int electionResetEvent time.Time`
+    
+- Understood Go’s `sync.Mutex` for concurrent access.
+    
+- Setup of `Make()` function with proper initialization.
+    
+
+### 🔬 3. Simulation:
+
+- Printed logs to verify Raft instances starting with term `0`, `state=Follower`, and `votedFor=-1`.
+    
+
+### ✍️ 4. Notes + Diagram:
+
+- Simple Raft State Machine Diagram:
+    
+    rust
+    
+    CopyEdit
+    
+    `Follower ---> Candidate ---> Leader      ^           |            |      |___________|____________|          (Timeout or RPC Term)`
+    
+- Noted how nodes become candidates upon election timeout.
+    
+
+---
+
+## 📘 DAY 5: Implement `RequestVote`
+
+### ✅ 1. What I Did Today:
+
+- Defined `RequestVoteArgs` and `RequestVoteReply`.
+    
+- Wrote the full `RequestVote()` RPC handler with locking and term update logic.
+    
+- Implemented `startElection()` function that is triggered on timeout.
+    
+
+### 🧱 2. Code Understanding:
+
+- `RequestVoteArgs` includes:
+    
+    go
+    
+    CopyEdit
+    
+    `Term         int CandidateId  int`
+    
+- `RequestVote()` handler:
+    
+    - Grants vote if term is up-to-date and hasn’t voted yet.
+        
+    - Steps down to Follower if request term > currentTerm.
+        
+- `startElection()`:
+    
+    - Increments term.
+        
+    - Votes for self.
+        
+    - Sends concurrent `RequestVote` RPCs to all peers.
+        
+    - Collects votes via goroutines + locking.
+        
+
+### 🔬 3. Simulation:
+
+- Triggered elections manually using `ticker()`.
+    
+- Verified term updates and vote counts in console:
+    
+    csharp
+    
+    CopyEdit
+    
+    `[Node 0] Starting election for term 1 [Node 2] voted for 0 in term 1 [Node 0] got vote from 2 for term 1 (votes: 2)`
+    
+
+### ✍️ 4. Notes + Diagram:
+
+- Voting Conditions:
+    
+    sql
+    
+    CopyEdit
+    
+    `if args.Term < currentTerm → Reject if votedFor == -1 or votedFor == args.CandidateId → Grant Vote`
+    
+
+---
+
+## 📘 DAY 6: Complete Election Logic + Ticker
+
+### ✅ 1. What I Did Today:
+
+- Completed `startElection()` to correctly elect a leader with majority votes.
+    
+- Added `ticker()` function to:
+    
+    - Track time since last heartbeat/election.
+        
+    - Call `startElection()` on timeout.
+        
+- Added goroutine to periodically check for timeouts using `time.Since()`.
+    
+
+### 🧱 2. Code Understanding:
+
+- `ticker()` loop:
+    
+    go
+    
+    CopyEdit
+    
+    `for !rf.killed() {     time.Sleep(10 * time.Millisecond)     if time.Since(rf.electionResetEvent) >= timeout {         startElection()     } }`
+    
+- Ensured each server has **random election timeouts** between 600–1000ms.
+    
+- Introduced **heartbeat goroutine** (even if empty) to simulate AppendEntries for leader.
+    
+
+### 🔬 3. Simulation:
+
+- Tested scenarios where multiple nodes start elections.
+    
+- Ensured only one leader is elected due to randomized timeout.
+    
+- Verified log output:
+    
+    rust
+    
+    CopyEdit
+    
+    `Node 2 becomes leader for term 11`
+    
+
+### ✍️ 4. Notes + Diagram:
+
+- Heartbeat Frequency: every 100ms (≤ 10/sec)
+    
+- Election Timeout Range: 600ms–1000ms (customized from 150ms–300ms)
+    
+- Leader Election Timing:
+    
+    sql
+    
+    CopyEdit
+    
+    `Term Increases → Candidate starts election → Sends RequestVote RPCs → Collect votes → Becomes Leader`
+    
+
+---
+
+## 📘 DAY 7: Final Fixes + Pass Test 2A
+
+### ✅ 1. What I Did Today:
+
+- Ensured `GetState()` was thread-safe using `mu.Lock()`.
+    
+- Fixed `RequestVote` race conditions and stale term handling.
+    
+- Debugged test failures like:
+    
+    sql
+    
+    CopyEdit
+    
+    `config.go:331: expected one leader, got none`
+    
+- Final run: **Passed `go test -run 2A`** ✅
+    
+
+### 🧱 2. Code Understanding:
+
+- Verified conditions in `startElection()`:
+    
+    - Check `rf.currentTerm == termAtStart`
+        
+    - Only increment vote count if state is still Candidate.
+        
+- Removed `matchIndex` and `nextIndex` (only needed in 2B).
+    
+- Used goroutines for `sendRequestVote`.
+    
+
+### 🔬 3. Simulation:
+
+- Captured console logs of successful elections:
+    
+    bash
+    
+    CopyEdit
+    
+    `Node 2 becomes leader for term 11 PASS ok  	mitraft/raft	8.562s`
+    
+
+### ✍️ 4. Notes + Diagram:
+
+- Heartbeats: periodic empty `AppendEntries` RPCs (just Term + LeaderID)
+    
+- Leader sends heartbeats every 100ms:
+    
+    go
+    
+    CopyEdit
+    
+    `for rf.killed() == false {     for peer := range rf.peers {         if peer != rf.me {             sendAppendEntries()         }     }     time.Sleep(100ms) }`
+    
+
+---
+
+
+
+
+#  📦`WEEK 2: Log Replication Inferno`
+
+## 📘 DAY 8: Log Structure, Start(), and sendAppendEntries() Skeleton
+
+### 1. ✅ What I Did Today:
+    
+    - Implemented `Start(command)` function to append entries as leader.
+        
+    - Built `sendAppendEntries()` structure (skeleton).
+        
+    - Created placeholder structs for `AppendEntriesArgs/Reply`.
+        
+### 2. 🧱 Code Understanding:
+    
+    - Understood when and how new entries are added by a leader.
+        
+    - Difference between `matchIndex`, `nextIndex`, and `len(rf.log)`.
+        
+### 3. 📏 Simulation:
+    
+    - Single leader scenario with one client sending commands.
+        
+    - Simulated send/receive RPCs using dummy logs.
+        
+### 4. ✍️ Notes + Diagram:
+    
+    - Log replication flowchart.
+        
+    - Table: Log structure before and after replication.
+        
+    - Defined corner cases like empty AppendEntries (heartbeat).
+        
+
+---
+
+## 📘 DAY 9: Follower Consistency Checks + Log Matching
+
+### 1. ✅ What I Did Today:
+    
+    - Implemented core logic in `AppendEntries()` RPC.
+        
+    - Wrote logic to detect mismatches (PrevLogIndex/Term checks).
+        
+    - Implemented overwrite/truncation for conflict resolution.
+        
+### 2. 🧱 Code Understanding:
+    
+    - Deep dive into log matching property.
+        
+    - Identified why followers must reject wrong logs.
+        
+    - Understood rollback using `ConflictIndex`.
+        
+### 3. 🧪 Simulation:
+    
+    - Ran cases where leader log diverged from follower’s.
+        
+    - Validated rejection + truncation + appending new entries.
+        
+### 4. ✍️ Notes + Diagram:
+    
+    - Conflict resolution loop diagram.
+        
+    - Table: `args.PrevLogIndex`, `args.PrevLogTerm`, follower term comparison.
+        
+    - Added test entry flow with PrevLogIndex shifts.
+        
+
+---
+
+## 📘 DAY 10: MatchIndex Updates + CommitIndex Advancement
+
+### 1. ✅ What I Did Today:
+    
+    - Updated `matchIndex[]`, `nextIndex[]` logic on success.
+        
+    - Added commit rule: majority match + current term check.
+        
+    - Refined condition to apply logs to state machine.
+        
+### 2. 🧱 Code Understanding:
+    
+    - Identified when and why leader should advance `commitIndex`.
+        
+    - Matched term condition avoids stale log commit.
+        
+### 3. 🧪 Simulation:
+    
+    - Ran 5-node scenarios with partially replicated logs.
+        
+    - Verified only majority logs with current term committed.
+        
+### 4. ✍️ Notes + Diagram:
+    
+    - Flowchart: MatchIndex collection → CommitIndex bump.
+        
+    - Table: All servers' matchIndex and majority logic.
+        
+
+---
+
+## 📘 DAY 11: Final Fixes + Pass TestBasicAgree2B
+
+### 1. ✅ What I Did Today:
+    
+    - Fixed panic due to uninitialized logs (dummy entry logic).
+        
+    - Corrected boundary checks in AppendEntries.
+        
+    - Ensured correct use of `len(rf.log)` vs `log indices`.
+        
+### 2. 🧱 Code Understanding:
+    
+    - Realized how offset errors break term comparison.
+        
+    - Difference between actual log index vs array index.
+        
+### 3. 🧪 Simulation:
+    
+    - Ran all 2B tests (`BasicAgree`, `FailAgree`, `RPCBytes`, etc).
+        
+    - Edge cases: follower log too short, term mismatch mid-log.
+        
+### 4. ✍️ Notes + Diagram:
+    
+    - Error tracebacks → bug → fix documented.
+        
+    - Diagram: Leader sends entries, follower truncates + applies.
+        
+    - Added explanation of `sendAppendEntries` safe return conditions.
+
+## 📘 DAY 12: Fix TestRPCBytes2B & Refactor startElection
+
+### ✅ What I Did Today:
+
+- Fixed **`TestRPCBytes2B`**, which was failing due to excessive RPC retries and log retransmissions.
+    
+- Added `[SEND]` / `[RECV]` debug logs inside `broadcastAppendEntries()` and `sendAppendEntries()` for traceability.
+    
+- Refactored monolithic `startElection()` function into:
+    
+    - `sendRequestVote()` – handles individual peer vote requests.
+        
+    - `broadcastRequestVote()` – sends votes to all peers.
+        
+- Added conditional check:
+    
+    go
+    
+    CopyEdit
+    
+    `if rf.matchIndex[peer] == lastIndex { return }`
+    
+    to avoid sending unnecessary log entries to up-to-date followers.
+    
+
+### 🧱 Code Understanding:
+
+- Learned that the **test checks RPC byte count**, not just correctness.
+    
+- Understood the importance of preventing **duplicate entries** being sent.
+    
+- Carefully analyzed `nextIndex[]` and `matchIndex[]` logic to optimize log replication.
+    
+- Found that some redundant RPCs were due to not checking `rf.matchIndex[peer]` before resending.
+    
+
+### 🧪 Simulation:
+
+- Enabled print logs to trace every `AppendEntries` call.
+    
+- Verified that followers were already in sync, yet leader was resending due to bad conditions.
+    
+- Walked through what each peer would receive and how `matchIndex` was being updated.
+    
+
+### ✍️ Notes + Diagram:
+
+- Refactored election logic into two helper methods for testability and clarity.
+    
+- Documented the `[SEND]/[RECV]` format to debug other RPC-heavy tests.
+    
+- Updated log consistency diagrams in notes to account for redundant sends.
+    
+
+---
+
+## 📘 DAY 13: Full Log Replication Logic + All Tests Passed !!
+
+### ✅ What I Did Today:
+
+- Completed the **entire remaining logic** for log replication and commitment.
+    
+- Fixed:
+    
+    - Log conflict detection in follower (`AppendEntries` reply logic).
+        
+    - Truncation + appending strategy for mismatched logs.
+        
+- Wrote helper method `findLastMatchIndex()` for majority commit index.
+    
+- Passed all 2B test cases including:
+    
+    - `TestBasicAgree2B`
+        
+    - `TestFailAgree2B`
+        
+    - `TestFailNoAgree2B`
+        
+    - `TestConcurrentStarts2B`
+        
+    - `TestRejoin2B`
+        
+    - `TestBackup2B`
+        
+    - `TestCount2B`
+        
+    - ✅ **`TestRPCBytes2B` (Already done Day 12)**
+        
+
+### 🧱 Code Understanding:
+
+- Deep dived into how followers handle conflicts:
+    
+    - Check if `args.PrevLogIndex` exists.
+        
+    - Match `args.PrevLogTerm` with local log term.
+        
+    - Truncate log from the conflicting index if mismatch detected.
+        
+- Learned how majority-based commit is determined using `matchIndex[]`.
+    
+
+### 🧪 Simulation:
+
+- Manually tested:
+    
+    - Case where one follower is behind → ensure proper truncation + re-append.
+        
+    - Leader crash and recovery → logs remain consistent.
+        
+- Validated term updates, log overwrite behavior, and commit advancement with diagrams.
+    
+
+### ✍️ Notes + Diagram:
+
+- Added flowchart for `AppendEntries` on follower:
+    
+    - Term check → Index check → Term match → Conflict handling → Log update.
+        
+- Snapshot of updated `matchIndex` and `nextIndex` tracking in Obsidian.
+    
+- Clearly documented leader commit advancement logic using `N > commitIndex` rule.
+
+## 📘 DAY 14: Implement `persist`, `readPersist`, Debugging + Test Passes (2C)
+
+### ✅ 1. What I Did Today:
+
+- Implemented `persist()` and `readPersist()` for crash recovery.
+    
+- Integrated persistence in key Raft transitions (vote/term/log updates).
+    
+- Refactored code to ensure `persist()` is called exactly where state changes matter.
+    
+- Passed all 2C tests **except `TestFigure82CUnreliable`**.
+    
+- Improved logs and comments around state restoration and crash recovery.
+    
+
+---
+
+### 🛠️ 2. Debug Log & Fixes:
+
+- Fixed edge case where `readPersist()` didn’t correctly restore logs due to shallow copy.
+    
+- Added debug prints to verify:
+    
+    - Log restoration after crash.
+        
+    - `currentTerm`, `votedFor` restoration.
+        
+- Made sure ApplyMsgs were consistent after recovery.
+    
+- Reduced duplicated `persist()` calls in election/append logic.
+    
+
+---
+
+### 📄 3. Raft Paper Tie-in:
+
+- Section **5.2: Persistence** studied in detail.
+    
+- Realized importance of storing both `currentTerm`, `votedFor`, and log entries to ensure no inconsistent log replay.
+    
+- Clarified when to **write** and **read** persistent state.
+    
+
+---
+
+### 💭 4. Reflections:
+
+- Persistence is minimal in Raft but **high-impact**.
+    
+- A single missed `persist()` can lead to failed recoveries and obscure bugs.
+    
+- Reading the persisted log on `Make()` call is crucial and affects leader election stability.
+    
+
+---
+
+
+
+#  📦 `WEEK 3: Dashboard & Commit Agreement`
+
+## 📘 DAY 15: Dashboard Setup, UI Design, Pentagon Layout, Components
+
+### ✅ 1. What I Did Today:
+
+- Started Raft Dashboard frontend (React + Tailwind).
+    
+- Designed node layout in a **perfect regular pentagon** with state-based coloring.
+    
+- Built individual `<Node />` component for Raft state.
+    
+- Implemented `initialNodes.js` with radial layout logic using angle math.
+    
+- Created layout container, center alignment, and placeholder buttons (Start, Pause, Reset).
+    
+
+---
+
+### 🎨 2. UI Design Decisions:
+
+- Used `relative` positioning with `top/left` in `%` to allow responsive pentagon layout.
+    
+- Color-coded nodes:
+    
+    - 🔵 Follower
+        
+    - 🟡 Candidate
+        
+    - 🔴 Leader
+        
+- Added `transform: translate(-50%, -50%)` to center nodes exactly.
+    
+- Button bar with `flex space-x` for future simulation control.
+    
+
+---
+
+### 🧩 3. Components Built:
+
+- `Node.jsx`: Renders a Raft node with ID, state, term, and color.
+    
+- `App.jsx`: Maps over `initialNodes` to layout nodes.
+    
+- `initialNodes.js`: Calculates regular pentagon node positions using polar coordinates.
+    
+
+---
+
+### ✏️ 4. Notes + Diagram:
+
+- Verified angular spacing: angle = 2πiN−π2\frac{2\pi i}{N} - \frac{\pi}{2}N2πi​−2π​ for top alignment.
+    
+- Created modular setup where UI can later plug into backend simulation.
+    
+- Setup ensures every node can be individually updated visually.
+## 📘 DAY 16: Node Interactivity, Click Events & Prep for Details Panel
+
+### ✅ What I Did Today:
+
+- Extended `<Node />` component to handle **click events**.
+    
+- Added state hooks in `App.jsx` for `selectedNode` to track which node was clicked.
+    
+- Built the basic framework for opening node details in a future pop-up panel.
+    
+- Ensured each node still renders in **pentagon layout** with correct positioning.
+    
+
+---
+
+### 🎨 UI Additions:
+
+- Hover + click effect on nodes (`cursor-pointer`, hover highlight).
+    
+- Node IDs now act as selectors → clicking saves the `nodeId` to state.
+    
+
+---
+
+### 🧩 Components:
+
+- Updated **Node.jsx** to accept `onClick`.
+    
+- `App.jsx` now has:
+    
+    `const [selectedNode, setSelectedNode] = useState(null);`
+    
+
+---
+
+### ✏️ Notes:
+
+- This prepared the ground for the **node details modal**, without breaking step slider / polling sync.
+    
+- Verified that clicking each node registers properly in React state.
+    
+
+---
+
+## 📘 DAY 17: Node Details Pop-Up Modal (UI Only)
+
+### ✅ What I Did Today:
+
+- Built `NodeDetailsModal.jsx` as a reusable pop-up component.
+    
+- Modal displays:
+    
+    - Node ID
+        
+    - Role (Leader / Follower / Candidate)
+        
+    - Current term
+        
+    - Commit index
+        
+    - Logs (in list format)
+        
+- Added **close button (×)** → resets `selectedNode` to null.
+    
+
+---
+
+### 🎨 UI Design Decisions:
+
+- Used fixed fullscreen overlay with semi-transparent dark background.
+    
+- Centered white card with Tailwind (`rounded-lg shadow-lg p-6`).
+    
+- Scrollable log section for future long logs.
+    
+
+---
+
+### 🧩 Components:
+
+- `NodeDetailsModal.jsx` created.
+    
+- Integrated into `App.jsx` → conditionally renders if `selectedNode !== null`.
+    
+
+---
+
+### ✏️ Notes:
+
+- Modal is purely UI-driven today (fake data injected).
+    
+- Verified open/close cycle works seamlessly.
+    
+
+---
+
+## 📘 DAY 18: Real Node Click → Show Actual Node Data
+
+### ✅ What I Did Today:
+
+- Connected modal to **real node data** from backend polling.
+    
+- On click → find node in `raftState.nodes[]` by ID → pass down props to `NodeDetailsModal`.
+    
+- Logs are now shown per-node based on history snapshot at current step.
+    
+
+---
+
+### 🧩 Code Changes:
+
+- In `App.jsx`:
+    
+    `const node = nodes.find(n => n.id === selectedNode); <NodeDetailsModal node={node} onClose={() => setSelectedNode(null)} />`
+    
+- Modal now shows **live state** (not hardcoded).
+    
+
+---
+
+### 🧪 Simulation:
+
+- Tested across 4 steps:
+    
+    - Step 0 → logs empty.
+        
+    - Step 1 → leader shows `[x=1]`.
+        
+    - Step 2 → followers catch up.
+        
+    - Step 3 → `[x=1, y=5]`.
+        
+
+---
+
+### ✏️ Notes:
+
+- This makes modal fully functional for history playback.
+    
+- Critical milestone: **click → inspect → close** loop completed.
+    
+
+---
+
+## 📘 DAY 19: Timeline & Step Slider Integration with Modal
+
+### ✅ What I Did Today:
+
+- Ensured modal reflects **historical node states** via step slider.
+    
+- If slider moves → modal updates instantly with correct snapshot.
+    
+- Added syncing with play/pause → modal live-updates when simulation runs.
+    
+
+---
+
+### 🧩 Components:
+
+- `StepSlider.jsx` + `App.jsx` → pass `currentStep` into modal.
+    
+- Modal reads data from `nodesHistory[currentStep]`.
+    
+
+---
+
+### 🧪 Simulation:
+
+- Open modal at Step 3 → shows logs `[x=1, y=5]`.
+    
+- Move slider back to Step 1 → instantly re-renders logs `[x=1]`.
+    
+
+---
+
+### ✏️ Notes:
+
+- First **end-to-end playback + inspection** workflow achieved.
+    
+- This locks in our Week 3 core milestone.
+    
+
+---
+
+## 📘 DAY 20: Backend Prep for Fault Injection
+
+### ✅ What I Did Today:
+
+- Shifted focus backend-side to prep for **fault injections**.
+    
+- Reviewed `backend.js` and `cluster.js`.
+    
+- Decided to keep **20–25 default steps static**.
+    
+- Dynamic steps will only be appended when user triggers faults (partition, drop, crash).
+    
+
+---
+
+### 🧩 Backend Plan:
+
+- Add new API routes:
+    
+    - `POST /raft/fault` → injects fault event.
+        
+    - `GET /raft/steps` → returns updated step history (default + dynamic).
+        
+- In `cluster.js`:
+    
+    - Maintain `steps[]` default history.
+        
+    - Fault injections → push into `steps[]` dynamically.
+        
+
+---
+
+### ✏️ Notes:
+
+- Made sure not to delete existing REST routes (`/raft/state`, `/raft/reset`).
+    
+- ESM + function-based only → no class.
+    
+
+---
+
+## 📘 DAY 21: Backend Cluster.js Functional Rewrite (Step Logic)
+
+### ✅ What I Did Today:
+
+- Began refactoring `cluster.js` into **function-based module**.
+    
+- Core exports:
+    
+    - `getFilteredState(step)`
+        
+    - `resetToInitialState()`
+        
+    - `injectFault(type)`
+        
+    - `getSteps()`
+        
+- Removed class-based approach.
+    
+- State kept in module-level variables (`let steps = []; let currentStep = 0;`).
+    
+
+---
+
+### 🧩 Code Example:
+
+`let steps = [...defaultSteps]; let currentStep = 0;  export const getFilteredState = step => steps[step] || steps[0]; export const resetToInitialState = () => { steps = [...defaultSteps]; currentStep = 0; }; export const injectFault = type => { /* modify steps + push new */ };`
+
+---
+
+### ✏️ Notes:
+
+- This ensures **functional, ESM-aligned design** → consistent with frontend.
+    
+- Dynamic steps ready for fault injection starting Week 4.
+    
+- Current state: Backend + frontend are aligned with **default → dynamic expansion** plan.
+
+# 📦 `WEEK 4: Fault Simulations + Experiments`
+
+## 📘 DAY 22: Crash/Recover Node, Timeout Forcing
+
+### ✅ What I Did Today:
+
+- Began implementation of **fault simulation features** for the Raft dashboard.
+    
+- Added actions to **crash a node** and **recover a node** via control buttons.
+    
+- Added logic to **force timeout** a follower, pushing it into Candidate state.
+    
+
+---
+
+### 🧩 Components Built/Updated:
+
+- Extended **ControlPanel** with new fault buttons: Crash, Recover, Force Timeout.
+    
+- Updated **Node.jsx** to visually reflect crashed state (gray overlay / inactive).
+    
+- Added handlers in `App.jsx` to process crash/recover actions and propagate state updates.
+    
+
+---
+
+### 🎨 UI Updates:
+
+- Crashed node marked with **dimmed circle & disabled interactivity**.
+    
+- Added button hover states for clarity.
+    
+- Separated normal control buttons (Play, Pause, Reset) from fault injection actions.
+    
+
+---
+
+### 🐞 Debug & Fixes:
+
+- Initial issue: crashed node kept sending heartbeats → fixed by excluding crashed nodes from polling updates.
+    
+- Timeout forcing initially reset instantly — fixed by enforcing randomized election delay on triggered node.
+    
+
+---
+
+---
+
+## 📘 DAY 23: Leader Crash & Election Flow
+
+### ✅ What I Did Today:
+
+- Implemented **leader crash behavior** → once leader is killed, system enters election phase.
+    
+- Randomized election timeouts among followers and selected highest-term candidate.
+    
+- Ensured election resumes with new leader correctly broadcasting heartbeats.
+    
+
+---
+
+### 🧩 Components Built/Updated:
+
+- Election logic integrated in **simulation backend** (inside step updates).
+    
+- Added **Election** visual marker: candidate nodes highlighted in yellow.
+    
+- Adjusted **StepSlider** so elections could be visualized across steps.
+    
+
+---
+
+### 🐞 Debug & Fixes:
+
+- Bug: after leader crash, multiple leaders spawned. Fixed by ensuring **only nodes with up-to-date logs** were eligible.
+    
+- Bug: term mismatch caused nodes to reject vote requests — fixed by syncing replicated logs before allowing candidacy.
+    
+- Added console logging during debugging to verify election winner consistency.
+    
+
+---
+
+### 🔬 Simulation Changes:
+
+- Heartbeats stop immediately after leader crash.
+    
+- Election begins only among alive nodes with fully replicated logs.
+    
+- New leader resumes sending heartbeats → log replication restored.
+    
+
+---
+
+---
+
+## 📘 DAY 24: Drop-Log Action, Replication Refinement
+
+### ✅ What I Did Today:
+
+- Added **Drop Latest Log Entry** feature per node for testing log consistency.
+    
+- Refined log replication: leader continuously appends and re-syncs missing logs on followers.
+    
+
+---
+
+### 🧩 Components Built/Updated:
+
+- New **Drop Log button** per node inside Node Details popup.
+    
+- Extended **LogsPanel** to show updates after log drop + resync.
+    
+- Updated **MessageArrow** to visually represent AppendEntries after drops.
+    
+
+---
+
+### 🎨 UI Updates:
+
+- Improved Node Details modal with **logs list** and action buttons (drop log, recover).
+    
+- Added **color-coded log entries** for easy tracking of dropped vs replicated entries.
+    
+
+---
+
+### 🐞 Debug & Fixes:
+
+- Bug: dropped logs not syncing properly after leader append → fixed by checking `prevLogIndex` before replication.
+    
+- Bug: logs duplicated across steps when replaying history — solved by ensuring **logs are cumulative but non-duplicating**.
+    
+- Fixed arrows disappearing after log drop → added re-render triggers on message sending.
+    
+
+---
+
+---
+
+## 📘 DAY 25: Final Debugging & Experiment Prep
+
+### ✅ What I Did Today:
+
+- Focused on **debugging disappearing messages and logs**.
+    
+- Fixed rendering issues where **balls/arrows disappeared** due to missing state in history.
+    
+- Stabilized polling + step slider sync for fault simulation scenarios.
+    
+
+---
+
+### 🐞 Debug & Fixes:
+
+- Major issue: messages vanished after step replay. Fixed by clarifying that **only node states are stored in history, not transient messages**.
+    
+- Debugged with **console.logs (clgs)** to verify transitions step-by-step.
+    
+- Removed failed patches that caused arrows/balls to disappear globally.
+    
+- Final UI stabilized: no ghost bugs, no message dropouts.
+    
+
+---
+
+### 🧩 Components Built/Updated:
+
+- Updated `useRaftPolling` to sync correctly with new fault injection states.
+    
+- Clean separation of **persistent history (node states)** vs **ephemeral simulation (messages)**.
+    
+- Refined **ControlPanel** to ensure button triggers do not conflict with slider playback.
+    
+
+---
+
+### 🔬 Simulation Changes:
+
+- Leader-only heartbeats enforced until leader crash.
+    
+- Election resets replicated logs, ensuring **strong log consistency across leader transitions**.
+    
+- Crash/recover + drop log actions verified across all nodes.
+## 📘 DAY 26: Log Replication, Crashes & Stability Testing
+
+### ✅ 1. What I Did Today
+
+- Ran extended simulations with **leader crash + recovery** scenarios.
+    
+- Observed system behavior with log replication under stress.
+    
+- Introduced **log trimming** (drop last entry) to simulate partial data loss.
+    
+
+### 🧩 2. Simulation Changes
+
+- Added option to **force crash** any node.
+    
+- Leader crashes triggered **Election Mode** → two eligible candidates selected (alive, latest replicated logs).
+    
+- Implemented **randomized election timeout** among candidates to simulate real Raft election.
+    
+- Added **drop latest log entry** action per node to test consistency guarantees.
+    
+
+### 🖥️ 3. UI Updates
+
+- Crash/recover buttons added to node details popup.
+    
+- Election process now clearly shown by **state color change** (Candidate → Leader).
+    
+- Log display updated to immediately reflect dropped entries.
+    
+
+### 🐛 4. Debug & Fixes
+
+- Fixed bug where recovering node re-joined with stale term. Now synced to leader’s term.
+    
+- Solved UI issue: sometimes node color stuck on Candidate after election → corrected via state reset hook.
+    
+
+---
+
+## 📘 DAY 27: Failover Metrics & Latency Analysis
+
+### ✅ 1. What I Did Today
+
+- Collected data on **failover time, leader stability, and replication latency**.
+    
+- Built repeatable simulation runs with different sequences of crash/recover + log drop.
+    
+- Ensured dashboard properly records history for later analysis.
+    
+
+### 🧩 2. Simulation Changes
+
+- Added internal timers to record:
+    
+    - ⏱️ Time between leader crash and new leader election.
+        
+    - 📦 Latency of log replication to all followers.
+        
+- Extended step history to store event metadata.
+    
+
+### 🖥️ 3. UI Updates
+
+- Timeline slider improved with **event annotations** (crash, recover, election).
+    
+- Added subtle highlight on node logs when new entry replicated.
+    
+- Message arrows adjusted to show faster replication speed vs slower catch-up.
+    
+
+### 🐛 4. Debug & Fixes
+
+- Fixed race condition where both candidates sometimes declared themselves leader. Now ensures **single leader commit**.
+    
+- Corrected mismatch in step history where follower log display lagged by one step.
+    
+
+---
+
+## 📘 DAY 28: Data Plotting & Experiment Wrap-Up
+
+### ✅ 1. What I Did Today
+
+- Exported recorded metrics (failover time, replication delay) to CSV for later graphing.
+    
+- Verified all dashboard experiments run without UI/logic errors.
+    
+- Closed the loop on **Week 4 plan** → simulations, crash handling, log drops, elections all stable.
+    
+
+### 🧩 2. Components Built/Updated
+
+- Added lightweight **metrics exporter** in backend.
+    
+- Updated StepSlider to stay synced even after rapid crash/recover events.
+    
+- Refined **Node Log display** to support variable log lengths.
+    
+
+### 🖥️ 3. UI Updates
+
+- Improved arrow rendering for multiple simultaneous AppendEntries → grouped arrows per leader step.
+    
+- Cleaned node popup design for better readability of crash/recover actions.
+    
+
+### 🐛 4. Debug & Fixes
+
+- Solved final rendering issue: static simulation “balls” (message arrows) not appearing → fixed by always resetting message layer on step change.
+    
+- Minor polish: ensured reset button clears both history + metrics buffer.
+
