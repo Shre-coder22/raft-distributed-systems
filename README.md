@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17015793.svg)](https://doi.org/10.5281/zenodo.17015793)
+
 # Raft Distributed Systems Lab + Dashboard
 
 This repo contains an **instrumented Raft implementation** (Go, based on MIT 6.824 labs 2A–2C) paired with a **fault-injectable dashboard** (React/Node).  

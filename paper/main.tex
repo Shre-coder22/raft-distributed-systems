@@ -124,9 +124,18 @@ We built an instrumented Raft and a fault injectable dashboard that together mak
 \section*{Artifacts \& Reproducibility}
 
 Code, data, and scripts are available at:  
-\url{https://github.com/Shre-coder22/raft-distributed-systems-lab} (release v1.1.0).  
-A preserved snapshot with DOI is provided via Zenodo.  
-Day-by-day notes are under \texttt{artifact/notes/}.
+\begin{itemize}
+  \item GitHub Repository: \url{https://github.com/Shre-coder22/raft-distributed-systems-lab}
+  \item Archived DOI Snapshot: \href{https://doi.org/10.5281/zenodo.17015793}{10.5281/zenodo.17015793}
+\end{itemize} 
+
+The repository includes:
+\begin{itemize}
+  \item \texttt{raft/}, \texttt{labrpc/}, \texttt{labgob/} — Go implementation of Raft (compatible with MIT 6.824).
+  \item \texttt{raft-dashboard/} — React/Node dashboard with fault injection (crash, recover, timeouts, log drops).
+  \item \texttt{artifact/} — day-by-day notes.
+  \item \texttt{paper/} — LaTeX source and figures for this manuscript.
+\end{itemize}
 
 \subsection*{Environment}
 \begin{itemize}
