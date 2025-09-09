@@ -10,7 +10,7 @@ async function ensureCsv(file, header) {
 }
 
 export async function initMetrics({
-  dir = "./metrics",
+  dir = "./metrics_100run",
   scenario = "leader_crash_restart",
   seed = 0,
   trial = 1,

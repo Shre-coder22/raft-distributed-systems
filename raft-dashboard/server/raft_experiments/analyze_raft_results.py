@@ -4,6 +4,71 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
+def _load_failover_seconds_from_dir(dir_path: str, scale: float = 25.0) -> pd.Series:
+    """Load, scale, clean, and return failover times in seconds from a metrics dir."""
+    fp = os.path.join(dir_path, "failover_trials.csv")
+    df = pd.read_csv(fp)
+    if df.empty:
+        return pd.Series(dtype=float)
+    df = clean_failover(df).copy()
+    df["failover_ms"] = df["failover_ms"] / scale
+    df["failover_s"]  = df["failover_ms"] / 1000.0
+    return df["failover_s"].sort_values().reset_index(drop=True)
+
+def _plot_failover_cdf_overlay(s1: pd.Series, s2: pd.Series, label1: str, label2: str, out_path: str):
+    plt.figure()
+    for label, s in [(label1, s1), (label2, s2)]:
+        vals = np.sort(s.values)
+        if len(vals) == 0:
+            continue
+        ys = np.arange(1, len(vals)+1) / len(vals)
+        med = np.median(vals); p95 = np.percentile(vals, 95); n = len(vals)
+        plt.plot(vals, ys, label=f"{label}: n={n}, med={med:.2f}, p95={p95:.2f}")
+    plt.xlabel("Failover Time (s)")
+    plt.ylabel("CDF")
+    plt.title("Leader Failover Time CDF (overlay)")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=160)
+    plt.close()
+    print(f"[OK] Saved {out_path}")
+
+def _write_failover_summary_csv(s1: pd.Series, s2: pd.Series, label1: str, label2: str, out_csv: str):
+    rows = []
+    for lab, s in [(label1, s1), (label2, s2)]:
+        if len(s) == 0:
+            rows.append({"run": lab, "n": 0, "p50": None, "p95": None, "p99": None})
+        else:
+            rows.append({
+                "run": lab,
+                "n": int(len(s)),
+                "p50": float(np.percentile(s, 50)),
+                "p95": float(np.percentile(s, 95)),
+                "p99": float(np.percentile(s, 99)),
+            })
+    pd.DataFrame(rows).to_csv(out_csv, index=False)
+    print(f"[OK] Saved {out_csv}")
+
+def plot_leader_fairness_hist(tenure_df: pd.DataFrame, out_path: str, title: str = "Leader Fairness (terms won)"):
+    if tenure_df.empty:
+        print("[WARN] No tenure data for leader fairness.")
+        return
+    col = "leader_id" if "leader_id" in tenure_df.columns else None
+    if col is None:
+        print("[WARN] 'leader_id' not found in leader_tenure.csv")
+        return
+    counts = tenure_df[col].value_counts().sort_index()
+    plt.figure()
+    counts.plot(kind="bar")
+    plt.xlabel("Leader Node ID")
+    plt.ylabel("Terms Won (count)")
+    plt.title(title)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=160)
+    plt.close()
+    print(f"[OK] Saved {out_path}")
+
+
 # ---------------- cleaning ----------------
 def clean_failover(df: pd.DataFrame) -> pd.DataFrame:
     """Remove warm-up artifacts and keep plausible failovers."""
@@ -93,6 +158,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
     ap.add_argument("--out", required=True)
+    
+    ap.add_argument("--compare_to", type=str, default=None,
+                    help="Path to a previous metrics folder (~40-run) for CDF overlay.")
+    ap.add_argument("--leader_fairness", action="store_true",
+                    help="If set, outputs leader_fairness_hist.png from leader_tenure.csv.")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -135,7 +205,7 @@ def main():
     plot_cdf(
         failover, "failover_s", "scenario",
         os.path.join(args.out, "failover_cdf.png"),
-        "Leader Failover Time CDF (timeouts 600–1000 ms, heartbeat 100 ms)",
+        "Leader Failover Time CDF (timeouts 240-400 ms, heartbeat 100 ms)",
         xlabel="Failover Time (s)"
     )
 
@@ -143,16 +213,37 @@ def main():
         plot_latency_vs_drop(
             rsum, "drop_rate", "median", "p95",
             os.path.join(args.out, "replication_latency_vs_drop.png"),
-            "Replication Latency vs Drop Rate (timeouts 600–1000 ms, heartbeat 100 ms)",
+            "Replication Latency vs Drop Rate (timeouts 240-400 ms, heartbeat 100 ms)",
             ylabel="Latency (s)"
         )
 
     boxplot_tenure(
         tenure,
         os.path.join(args.out, "leader_tenure_box.png"),
-        "Leader Tenure by Scenario (timeouts 600–1000 ms, heartbeat 100 ms)",
+        "Leader Tenure by Scenario (timeouts 240-400 ms, heartbeat 100 ms)",
         ylabel="Leader Tenure (s)"
     )
+    
+    if args.compare_to:
+        s_new  = _load_failover_seconds_from_dir(args.input)      # long run 
+        s_old  = _load_failover_seconds_from_dir(args.compare_to) # short run
+        _plot_failover_cdf_overlay(
+            s_new, s_old,
+            "long-run (new)", "short-run (old)",
+            os.path.join(args.out, "failover_cdf_long_vs_short.png")
+        )
+        _write_failover_summary_csv(
+            s_new, s_old,
+            "long-run (new)", "short-run (old)",
+            os.path.join(args.out, "failover_summary.csv")
+        )
+
+    if args.leader_fairness:
+        plot_leader_fairness_hist(
+            tenure,
+            os.path.join(args.out, "leader_fairness_hist.png"),
+            title="Leader Fairness (terms won)"
+        )
 
 if __name__ == "__main__":
     main()

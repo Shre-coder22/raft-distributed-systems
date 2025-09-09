@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Making Raft Visible: instrumented Raft + fault-injectable dashboard"
+authors:
+  - family-names: Saxena
+    given-names: Shrestha
+    orcid: "https://orcid.org/0009-0005-2254-4804"
+version: "1.0.0"
+date-released: "2025-09-09"
+url: "https://github.com/Shre-coder22/raft-distributed-systems-lab"
