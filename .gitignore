@@ -6,3 +6,23 @@ mrtmp.*
 /pbservice/x.txt
 /kvpaxos/x.txt
 
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+node_modules/
+dist/
+build/
+.DS_Store
+Thumbs.db
+raft-dashboard/server/venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+raft-dashboard/**/node_modules/
+raft-dashboard/**/dist/
+raft-dashboard/**/build/
+.DS_Store
+Thumbs.db
