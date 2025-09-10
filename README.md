@@ -1,4 +1,16 @@
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17015793.svg)](https://doi.org/10.5281/zenodo.17015793)
+## What is Raft?
+Raft is a leader-based consensus algorithm for replicating a log across servers. A single leader is elected by randomized timeouts; the leader appends client operations to the log and commits entries once a majority acknowledges. This provides a linearizable state machine under crash faults and unreliable networks. See Ongaro & Ousterhout (USENIX ATC’14) and Lamport (1998) for the foundations.
+
+## Scope of this JOSS submission
+The software under review consists of:
+- `raft/` – instrumented Raft implementation and event hooks.
+- `raft-dashboard/server/` and `raft-dashboard/client/` – fault-injectable dashboard (crashes, packet drop) and visualization.
+- `raft-dashboard/server/raft_experiments/` – metrics logger & analyzer (`analyze_raft_results.py`).
+- `raft-dashboard/server/metrics_100run/` and `metrics_40run/` – small example datasets for reproducing the paper figures.
+
+Not part of the JOSS review (teaching scaffolding, deps, or build output):
+- `labrpc/`, `labgob/` (course scaffolding)
+- any `node_modules/`, `dist/`, `build/` directories
 
 # Raft Distributed Systems Lab + Dashboard
 
