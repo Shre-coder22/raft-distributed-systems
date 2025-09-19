@@ -46,24 +46,38 @@ Quality control:
 
 # Installation & quick start
 
-Install prerequisites (Go >=1.19, Node >=20, Python >=3.10). Then start the dashboard (server and client in separate shells) and run the analyzer on the example metrics to regenerate figures.
+This package requires three dependencies: **Go (version 1.19 or newer)**, **Node.js (version 20 or newer)**, and **Python (version 3.10 or newer)**. Once these are installed, the software can be obtained directly from GitHub by cloning the repository and moving into the project directory:
 
 ```bash
-# clone and enter the repo
 git clone https://github.com/Shre-coder22/raft-distributed-systems-lab
 cd raft-distributed-systems-lab
+```
 
-# server
+The Raft dashboard has two components, a backend server and a frontend client, which must be started separately. To launch the server, open a terminal, install the dependencies, and start the development process:
+
+```bash
 cd raft-dashboard/server
 npm install
 npm run dev
+```
 
-# client (new shell)
+In a separate terminal, start the client in the same way:
+
+```bash
 cd raft-dashboard/client
 npm install
 npm run dev
+```
 
-# analyze an example dataset (writes figures under ./metrics_100run/figures)
-cd ../server
+Once both server and client are running, the dashboard will open in the browser. This interactive interface allows control over Raft nodes, leader elections, and injected faults.
+
+For analysis, the repository includes an example dataset from a 100-step experiment. The analysis script processes the recorded metrics and regenerates the main figures (failover distribution, leader tenure, and replication latency). To run the analyzer, execute:
+
+```bash
+cd raft-dashboard/server
 py raft_experiments/analyze_raft_results.py --input ./metrics_100run --out ./metrics_100run/figures
-# (use 'python' instead of 'py' on some systems)
+```
+
+(If your system does not recognize py, replace it with python.) The generated figures are written to ./metrics_100run/figures, reproducing those shown in the manuscript.
+
+# References
