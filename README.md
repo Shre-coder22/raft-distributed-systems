@@ -28,7 +28,6 @@ It supports reproducible experiments on **leader failover**, **replication laten
   - `supplementary/`: extra figures.
 
 ## Environment
-- Windows 11
 - Go 1.19+
 - Node 20.10.0, npm 10.2.3
 - Python 3.10.3
