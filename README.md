@@ -75,5 +75,5 @@ If you use this artifact, please cite:
   year = {2025},
   publisher = {GitHub},
   journal = {GitHub repository},
-  howpublished = url : {https://github.com/Shre-coder22/raft-distributed-systems-lab}
+  howpublished = url : {https://github.com/Shre-coder22/raft-distributed-systems}
 }

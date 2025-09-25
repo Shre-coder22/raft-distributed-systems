@@ -49,8 +49,8 @@ Quality control:
 This package requires three dependencies: **Go (version 1.19 or newer)**, **Node.js (version 20 or newer)**, and **Python (version 3.10 or newer)**. Once these are installed, the software can be obtained directly from GitHub by cloning the repository and moving into the project directory:
 
 ```bash
-git clone https://github.com/Shre-coder22/raft-distributed-systems-lab
-cd raft-distributed-systems-lab
+git clone https://github.com/Shre-coder22/raft-distributed-systems
+cd raft-distributed-systems
 ```
 
 The Raft dashboard has two components, a backend server and a frontend client, which must be started separately. To launch the server, open a terminal, install the dependencies, and start the development process:
